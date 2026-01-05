@@ -1,4 +1,3 @@
-
 const HTML = [
 '<!DOCTYPE html>',
 '<html lang="zh-CN">',
