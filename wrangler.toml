@@ -1,0 +1,13 @@
+name = "tg-management-bot"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "tg-management"
+database_id = "8945d16d-c34ccf693f"
+[vars]
+ADMIN_KEY = "1464gWg"
+BOT_TOKEN = "84507746:AAF6WwPj8MxiujT0Q"
+WEBHOOK_SECRET = "164h"
