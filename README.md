@@ -1,6 +1,4 @@
-我来帮你创建一个完整的 README.md 文档：
 
-```markdown
 # 星霜 Pro - Telegram 群组管理系统
 
 基于 Cloudflare Workers 的智能 Telegram 群组管理机器人，提供入群审核、用户封禁、白名单管理等功能。
