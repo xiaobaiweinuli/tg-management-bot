@@ -1,3 +1,4 @@
+
 /**
  * 星霜Pro群组管理系统 - Cloudflare Worker
  * 基于 Cloudflare Workers + D1 数据库
@@ -7,6 +8,7 @@
  * - SUPER_ADMINS: 超级管理员ID列表（逗号分隔）
  * - WEBHOOK_SECRET: Webhook 安全密钥
  * - WEBAPP_URL: 管理面板 URL（可选，用于 /panel 命令）
+ * 
  * D1 数据库绑定：DB
  */
 
@@ -1503,9 +1505,109 @@ function getHTML() {
     let token = null;
     let currentUser = null;
     let currentTab = 'dashboard';
-    let dataCache = {};
-    let isRefreshing = false;
     let tg = null;
+    
+    // ==================== 缓存系统 ====================
+    const dataCache = {
+      // 缓存结构: { data: any, timestamp: number, loading: boolean }
+      stats: null,
+      groups: null,
+      bans: null,
+      whitelist: null,
+      admins: null,
+      notifications: null,
+      banwords: null,
+      logs: null,
+      
+      // 缓存时间配置（毫秒）
+      cacheTimes: {
+        stats: 30000,     // 30秒
+        groups: 30000,    // 30秒
+        bans: 10000,      // 10秒
+        whitelist: 30000, // 30秒
+        admins: 60000,    // 60秒
+        notifications: 60000, // 60秒
+        banwords: 60000,  // 60秒
+        logs: 5000        // 5秒
+      },
+      
+      // 检查缓存是否有效
+      isValid(cacheKey) {
+        const cache = this[cacheKey];
+        if (!cache || !cache.timestamp) return false;
+        const cacheTime = this.cacheTimes[cacheKey] || 30000;
+        return Date.now() - cache.timestamp < cacheTime;
+      },
+      
+      // 获取缓存数据
+      get(cacheKey) {
+        if (this.isValid(cacheKey)) {
+          return this[cacheKey].data;
+        }
+        return null;
+      },
+      
+      // 设置缓存数据
+      set(cacheKey, data) {
+        this[cacheKey] = {
+          data: data,
+          timestamp: Date.now(),
+          loading: false
+        };
+      },
+      
+      // 标记为正在加载
+      setLoading(cacheKey, loading = true) {
+        if (this[cacheKey]) {
+          this[cacheKey].loading = loading;
+        } else {
+          this[cacheKey] = { loading: loading };
+        }
+      },
+      
+      // 检查是否正在加载
+      isLoading(cacheKey) {
+        return this[cacheKey] && this[cacheKey].loading === true;
+      },
+      
+      // 清除特定缓存
+      clear(cacheKey) {
+        this[cacheKey] = null;
+      },
+      
+      // 清除所有缓存
+      clearAll() {
+        Object.keys(this.cacheTimes).forEach(key => {
+          this[key] = null;
+        });
+      },
+      
+      // 获取数据（带缓存逻辑）
+      async fetch(cacheKey, apiPath, forceRefresh = false) {
+        // 如果强制刷新或缓存无效，则重新获取
+        if (forceRefresh || !this.isValid(cacheKey)) {
+          this.setLoading(cacheKey, true);
+          try {
+            const data = await api(apiPath);
+            if (data !== null) {
+              this.set(cacheKey, data);
+            }
+            return data;
+          } finally {
+            this.setLoading(cacheKey, false);
+          }
+        }
+        
+        // 如果正在加载，等待一小段时间后重试
+        if (this.isLoading(cacheKey)) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return this.fetch(cacheKey, apiPath, false);
+        }
+        
+        // 返回缓存数据
+        return this.get(cacheKey);
+      }
+    };
 
     // ==================== 头像渲染辅助函数 ====================
     function renderAvatar(photoBase64, name, size) {
@@ -1558,8 +1660,9 @@ function getHTML() {
         }
         return data;
       } catch (e) {
-        showToast('网络错误', 'error');
-        throw e;
+        console.error('API Error:', e);
+        showToast('网络错误，请重试', 'error');
+        return null;
       }
     }
 
@@ -1668,14 +1771,14 @@ function getHTML() {
         t.classList.remove('tab-active');
         if (t.dataset.tab === tab) t.classList.add('tab-active');
       });
-      loadTabContent(true);
+      loadTabContent();
     }
 
-    async function loadTabContent(showLoading) {
+    async function loadTabContent() {
       var content = document.getElementById('content');
-      if (showLoading) {
-        content.innerHTML = '<div class="text-center py-10"><div class="loading-spinner"></div><div class="mt-2 text-gray-400">加载中...</div></div>';
-      }
+      
+      // 显示加载状态
+      content.innerHTML = '<div class="text-center py-10"><div class="loading-spinner"></div><div class="mt-2 text-gray-400">加载中...</div></div>';
       
       try {
         switch (currentTab) {
@@ -1692,31 +1795,35 @@ function getHTML() {
         setTimeout(function() { content.classList.remove('fade-update'); }, 300);
       } catch (e) {
         console.error('Load error:', e);
-        if (showLoading) {
-          content.innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
-        }
+        content.innerHTML = '<div class="text-center py-10 text-red-400">加载失败: ' + escapeHtml(e.message) + '</div>';
       }
     }
 
     // 手动刷新
     async function manualRefresh() {
-      if (isRefreshing) return;
-      isRefreshing = true;
       var btn = document.getElementById('refreshBtn');
+      var originalHtml = btn.innerHTML;
       btn.innerHTML = '<div class="loading-spinner"></div>';
       
-      dataCache = {};
-      await loadTabContent(false);
+      // 清除当前标签页的缓存
+      dataCache.clear(currentTab);
+      if (currentTab === 'bans') dataCache.clear('groups');
+      if (currentTab === 'whitelist') dataCache.clear('groups');
+      if (currentTab === 'notifications') dataCache.clear('groups');
       
-      btn.innerHTML = '🔄';
-      isRefreshing = false;
+      await loadTabContent();
+      
+      btn.innerHTML = originalHtml;
       showToast('数据已刷新');
     }
 
     // ==================== 控制面板 ====================
     async function loadDashboard() {
-      var stats = await api('/stats');
-      if (!stats) return;
+      var stats = await dataCache.fetch('stats', '/stats');
+      if (!stats) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
       
       var content = document.getElementById('content');
       
@@ -1800,9 +1907,12 @@ function getHTML() {
 
     // ==================== 群组管理 ====================
     async function loadGroups() {
-      var groups = await api('/groups');
-      if (!groups) return;
-      dataCache.groups = groups;
+      var groups = await dataCache.fetch('groups', '/groups');
+      if (!groups) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
       var content = document.getElementById('content');
       
       var html = '<div class="flex justify-between items-center mb-4">' +
@@ -1862,12 +1972,13 @@ function getHTML() {
     async function refreshGroup(groupId) {
       showToast('正在刷新...');
       await api('/groups/' + groupId + '/refresh', { method: 'POST' });
+      dataCache.clear('groups');
       await loadGroups();
       showToast('群组信息已更新');
     }
 
     async function toggleGroupSetting(groupId, setting, value) {
-      var groups = dataCache.groups || [];
+      var groups = dataCache.get('groups') || [];
       var group = null;
       for (var i = 0; i < groups.length; i++) {
         if (groups[i].id === groupId) {
@@ -1887,11 +1998,12 @@ function getHTML() {
       
       await api('/groups/' + groupId, { method: 'PUT', body: JSON.stringify(data) });
       showToast('设置已更新');
+      dataCache.clear('groups');
       await loadGroups();
     }
 
     async function updateBanDuration(groupId, duration) {
-      var groups = dataCache.groups || [];
+      var groups = dataCache.get('groups') || [];
       var group = null;
       for (var i = 0; i < groups.length; i++) {
         if (groups[i].id === groupId) {
@@ -1911,12 +2023,15 @@ function getHTML() {
         })
       });
       showToast('封禁时长已更新');
+      dataCache.clear('groups');
+      await loadGroups();
     }
 
     async function deleteGroup(groupId) {
       if (!confirm('确定要删除此群组吗？')) return;
       await api('/groups/' + groupId, { method: 'DELETE' });
       showToast('群组已删除');
+      dataCache.clear('groups');
       await loadGroups();
     }
 
@@ -1946,15 +2061,20 @@ function getHTML() {
       } else if (result) {
         showToast('群组添加成功');
         closeModal();
+        dataCache.clear('groups');
         await loadGroups();
       }
     }
 
     // ==================== 封禁管理 ====================
     async function loadBans() {
-      var bans = await api('/bans');
-      if (!bans) return;
-      var groups = dataCache.groups || await api('/groups') || [];
+      var bans = await dataCache.fetch('bans', '/bans');
+      if (!bans) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups') || [];
       var content = document.getElementById('content');
       
       var html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
@@ -2038,7 +2158,7 @@ function getHTML() {
       var groupId = document.getElementById('banGroupFilter').value;
       var bans = await api('/bans?search=' + encodeURIComponent(search) + '&group_id=' + groupId);
       if (!bans) return;
-      var groups = dataCache.groups || [];
+      var groups = dataCache.get('groups') || [];
       document.getElementById('bansList').innerHTML = renderBansList(bans, groups);
     }
 
@@ -2049,6 +2169,7 @@ function getHTML() {
     async function unbanUser(groupId, userId) {
       await api('/bans/unban', { method: 'POST', body: JSON.stringify({ groupId: groupId, userId: userId }) });
       showToast('用户已解封');
+      dataCache.clear('bans');
       await loadBans();
     }
 
@@ -2056,15 +2177,19 @@ function getHTML() {
       if (!confirm('确定要删除此封禁记录吗？')) return;
       await api('/bans/' + banId, { method: 'DELETE' });
       showToast('记录已删除');
+      dataCache.clear('bans');
       await loadBans();
     }
 
     // ==================== 白名单管理 ====================
     async function loadWhitelist() {
-      var whitelist = await api('/whitelist');
-      if (!whitelist) return;
-      var groups = dataCache.groups || await api('/groups') || [];
-      dataCache.groups = groups;
+      var whitelist = await dataCache.fetch('whitelist', '/whitelist');
+      if (!whitelist) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups') || [];
       var content = document.getElementById('content');
       
       var html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
@@ -2181,9 +2306,15 @@ function getHTML() {
     }
 
     async function loadGroupsForSelect(selectId) {
-      var groups = dataCache.groups || await api('/groups') || [];
+      var groups = dataCache.get('groups') || [];
       var select = document.getElementById(selectId);
       if (!select) return;
+      
+      // 清除现有选项（除了第一个）
+      while (select.options.length > 1) {
+        select.remove(1);
+      }
+      
       for (var i = 0; i < groups.length; i++) {
         var g = groups[i];
         var option = document.createElement('option');
@@ -2203,6 +2334,7 @@ function getHTML() {
       await api('/whitelist', { method: 'POST', body: JSON.stringify({ userId: userId, groupId: groupId, note: note }) });
       showToast('添加成功');
       closeModal();
+      dataCache.clear('whitelist');
       await loadWhitelist();
     }
 
@@ -2217,6 +2349,7 @@ function getHTML() {
       await api('/whitelist', { method: 'POST', body: JSON.stringify({ userIds: userIds, groupId: groupId, note: note }) });
       showToast('导入成功');
       closeModal();
+      dataCache.clear('whitelist');
       await loadWhitelist();
     }
 
@@ -2224,13 +2357,18 @@ function getHTML() {
       if (!confirm('确定要删除吗？')) return;
       await api('/whitelist/' + id, { method: 'DELETE' });
       showToast('已删除');
+      dataCache.clear('whitelist');
       await loadWhitelist();
     }
 
     // ==================== 管理员管理 ====================
     async function loadAdmins() {
-      var data = await api('/admins');
-      if (!data) return;
+      var data = await dataCache.fetch('admins', '/admins');
+      if (!data) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
       var content = document.getElementById('content');
       
       var html = '<div class="flex justify-between items-center mb-4">' +
@@ -2326,6 +2464,7 @@ function getHTML() {
       await api('/admins', { method: 'POST', body: JSON.stringify({ userId: userId, groupId: groupId }) });
       showToast('添加成功');
       closeModal();
+      dataCache.clear('admins');
       await loadAdmins();
     }
 
@@ -2336,16 +2475,20 @@ function getHTML() {
         showToast(result.error, 'error');
       } else {
         showToast('已删除');
+        dataCache.clear('admins');
         await loadAdmins();
       }
     }
 
     // ==================== 通知设置 ====================
     async function loadNotifications() {
-      var data = await api('/notifications');
-      if (!data) return;
-      var groups = dataCache.groups || await api('/groups') || [];
-      dataCache.groups = groups;
+      var data = await dataCache.fetch('notifications', '/notifications');
+      if (!data) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups') || [];
       var content = document.getElementById('content');
       
       var html = '<div class="mb-4">' +
@@ -2425,6 +2568,7 @@ function getHTML() {
         body: JSON.stringify({ adminId: adminId, groupId: null, enabled: enabled }) 
       });
       showToast(enabled ? '通知已开启' : '通知已关闭');
+      dataCache.clear('notifications');
       await loadNotifications();
     }
 
@@ -2445,7 +2589,7 @@ function getHTML() {
         '</div>'
       );
       
-      var groups = dataCache.groups || [];
+      var groups = dataCache.get('groups') || [];
       var select = document.getElementById('notifGroupId');
       for (var i = 0; i < groups.length; i++) {
         var g = groups[i];
@@ -2466,12 +2610,14 @@ function getHTML() {
       await api('/notifications', { method: 'POST', body: JSON.stringify({ adminId: adminId, groupId: groupId, enabled: true }) });
       showToast('添加成功');
       closeModal();
+      dataCache.clear('notifications');
       await loadNotifications();
     }
 
     async function toggleNotification(id, enabled) {
       await api('/notifications/' + id, { method: 'PUT', body: JSON.stringify({ enabled: enabled }) });
       showToast(enabled ? '通知已开启' : '通知已关闭');
+      dataCache.clear('notifications');
       await loadNotifications();
     }
 
@@ -2479,14 +2625,18 @@ function getHTML() {
       if (!confirm('确定要删除吗？')) return;
       await api('/notifications/' + id, { method: 'DELETE' });
       showToast('已删除');
+      dataCache.clear('notifications');
       await loadNotifications();
     }
 
     // ==================== 违禁词管理 ====================
     async function loadBanwords() {
-      var banwords = await api('/banwords');
-      if (!banwords) return;
-      dataCache.banwords = banwords;
+      var banwords = await dataCache.fetch('banwords', '/banwords');
+      if (!banwords) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
       var content = document.getElementById('content');
       
       var html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
@@ -2547,6 +2697,7 @@ function getHTML() {
       await api('/banwords', { method: 'POST', body: JSON.stringify({ word: word }) });
       showToast('添加成功');
       closeModal();
+      dataCache.clear('banwords');
       await loadBanwords();
     }
 
@@ -2557,17 +2708,19 @@ function getHTML() {
       await api('/banwords', { method: 'POST', body: JSON.stringify({ words: words }) });
       showToast('导入成功');
       closeModal();
+      dataCache.clear('banwords');
       await loadBanwords();
     }
 
     async function deleteBanword(id) {
       await api('/banwords/' + id, { method: 'DELETE' });
       showToast('已删除');
+      dataCache.clear('banwords');
       await loadBanwords();
     }
 
     async function exportBanwords() {
-      var banwords = dataCache.banwords || await api('/banwords') || [];
+      var banwords = dataCache.get('banwords') || await api('/banwords') || [];
       var words = [];
       for (var i = 0; i < banwords.length; i++) {
         words.push(banwords[i].word);
@@ -2579,8 +2732,12 @@ function getHTML() {
 
     // ==================== 系统日志 ====================
     async function loadLogs() {
-      var logs = await api('/logs');
-      if (!logs) return;
+      var logs = await dataCache.fetch('logs', '/logs');
+      if (!logs) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
       var content = document.getElementById('content');
       
       var types = ['all', 'join', 'ban', 'whitelist', 'admin', 'notification', 'system', 'error'];
@@ -2665,6 +2822,7 @@ function getHTML() {
       if (result && result.ok) {
         showToast('Webhook 设置成功');
         closeModal();
+        dataCache.clear('stats');
         await loadDashboard();
       } else {
         showToast('设置失败: ' + (result ? result.description || '未知错误' : '网络错误'), 'error');
