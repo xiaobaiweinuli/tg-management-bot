@@ -1,13 +1,15 @@
-name = "tg-management-bot"
+# 星霜Pro 群组管理系统 - Cloudflare Worker 配置
+name = "xingshuang-pro"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
-
-[[env.production.d1_databases]]
+# D1 数据库绑定
+[[d1_databases]]
 binding = "DB"
-database_name = "tg-management"
-database_id = "8945d16d-c34ccf693f"
+database_name = "xingshuang-pro-db"
+database_id = "your-database-id-here" # 创建后替换
+
+# 环境变量（敏感信息请使用 wrangler secret）
 [vars]
-ADMIN_KEY = "1464gWg"
-BOT_TOKEN = "84507746:AAF6WwPj8MxiujT0Q"
-WEBHOOK_SECRET = "164h"
+# BOT_TOKEN = "" # 使用 wrangler secret put BOT_TOKEN
+# SUPER_ADMINS = "123456789,987654321" # 超级管理员ID列表
