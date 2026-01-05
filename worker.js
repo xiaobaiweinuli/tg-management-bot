@@ -6,14 +6,14 @@
  * - BOT_TOKEN: Telegram Bot Token
  * - SUPER_ADMINS: 超级管理员ID列表（逗号分隔）
  * - WEBHOOK_SECRET: Webhook 安全密钥
- * 
+ * - WEBAPP_URL: 管理面板 URL（可选，用于 /panel 命令）
  * D1 数据库绑定：DB
  */
 
 // ==================== 配置 ====================
 const CONFIG = {
-  SESSION_DURATION: 24 * 60 * 60 * 1000, // 24小时会话
-  CACHE_DURATION: 30 * 1000, // 30秒缓存
+  SESSION_DURATION: 24 * 60 * 60 * 1000,
+  CACHE_DURATION: 30 * 1000,
   TIMEZONE: 'Asia/Shanghai',
   DEFAULT_BAN_WORDS: [
     '代理', '兼职', '日结', '月入', '躺赚', '被动收入',
@@ -46,7 +46,12 @@ function containsChinese(text) {
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    headers: { 
+      'Content-Type': 'application/json', 
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    }
   });
 }
 
@@ -64,6 +69,7 @@ async function initDatabase(db) {
       title TEXT,
       username TEXT,
       photo_url TEXT,
+      photo_base64 TEXT,
       anti_ad INTEGER DEFAULT 1,
       require_chinese_name INTEGER DEFAULT 1,
       require_avatar INTEGER DEFAULT 1,
@@ -77,6 +83,7 @@ async function initDatabase(db) {
       username TEXT,
       first_name TEXT,
       last_name TEXT,
+      photo_base64 TEXT,
       group_id TEXT NOT NULL,
       reason TEXT,
       banned_at TEXT,
@@ -90,7 +97,7 @@ async function initDatabase(db) {
       username TEXT,
       first_name TEXT,
       last_name TEXT,
-      photo_url TEXT,
+      photo_base64 TEXT,
       group_id TEXT,
       note TEXT,
       created_at TEXT,
@@ -102,7 +109,7 @@ async function initDatabase(db) {
       username TEXT,
       first_name TEXT,
       last_name TEXT,
-      photo_url TEXT,
+      photo_base64 TEXT,
       group_id TEXT,
       is_super INTEGER DEFAULT 0,
       created_at TEXT,
@@ -136,13 +143,13 @@ async function initDatabase(db) {
       created_at TEXT,
       expires_at TEXT
     )`,
-    `CREATE TABLE IF NOT EXISTS pending_requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
-      group_id TEXT NOT NULL,
-      status TEXT DEFAULT 'pending',
-      created_at TEXT,
-      UNIQUE(user_id, group_id)
+    `CREATE TABLE IF NOT EXISTS user_cache (
+      user_id TEXT PRIMARY KEY,
+      username TEXT,
+      first_name TEXT,
+      last_name TEXT,
+      photo_base64 TEXT,
+      updated_at TEXT
     )`
   ];
   
@@ -150,7 +157,6 @@ async function initDatabase(db) {
     await db.prepare(sql).run();
   }
   
-  // 初始化默认违禁词
   const existingWords = await db.prepare('SELECT COUNT(*) as count FROM ban_words').first();
   if (existingWords.count === 0) {
     for (const word of CONFIG.DEFAULT_BAN_WORDS) {
@@ -238,23 +244,107 @@ class TelegramAPI {
   getFileUrl(filePath) {
     return `https://api.telegram.org/file/bot${this.token}/${filePath}`;
   }
+
+  async downloadFileAsBase64(filePath) {
+    try {
+      const url = this.getFileUrl(filePath);
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      const buffer = await response.arrayBuffer();
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+      const contentType = response.headers.get('content-type') || 'image/jpeg';
+      return `data:${contentType};base64,${base64}`;
+    } catch (e) {
+      console.error('Download file error:', e);
+      return null;
+    }
+  }
+}
+
+// ==================== 用户信息获取与缓存 ====================
+async function getUserInfoWithPhoto(telegram, db, userId) {
+  // 检查缓存
+  const cached = await db.prepare('SELECT * FROM user_cache WHERE user_id = ?').bind(userId.toString()).first();
+  const now = new Date();
+  
+  if (cached) {
+    const updatedAt = new Date(cached.updated_at);
+    if (now - updatedAt < 24 * 60 * 60 * 1000) {
+      return cached;
+    }
+  }
+  
+  // 获取用户信息
+  let userInfo = { user_id: userId.toString(), username: '', first_name: '', last_name: '', photo_base64: null };
+  
+  try {
+    const chatResult = await telegram.getChat(userId);
+    if (chatResult.ok) {
+      const chat = chatResult.result;
+      userInfo.username = chat.username || '';
+      userInfo.first_name = chat.first_name || '';
+      userInfo.last_name = chat.last_name || '';
+      
+      // 获取头像
+      if (chat.photo) {
+        const file = await telegram.getFile(chat.photo.small_file_id);
+        if (file.ok) {
+          userInfo.photo_base64 = await telegram.downloadFileAsBase64(file.result.file_path);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Get user info error:', e);
+  }
+  
+  // 更新缓存
+  await db.prepare(`
+    INSERT OR REPLACE INTO user_cache (user_id, username, first_name, last_name, photo_base64, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(userInfo.user_id, userInfo.username, userInfo.first_name, userInfo.last_name, userInfo.photo_base64, formatBeijingTime()).run();
+  
+  return userInfo;
+}
+
+async function getGroupInfoWithPhoto(telegram, db, chatId) {
+  try {
+    const chatInfo = await telegram.getChat(chatId);
+    if (!chatInfo.ok) return null;
+    
+    const chat = chatInfo.result;
+    let photoBase64 = null;
+    
+    if (chat.photo) {
+      const file = await telegram.getFile(chat.photo.small_file_id);
+      if (file.ok) {
+        photoBase64 = await telegram.downloadFileAsBase64(file.result.file_path);
+      }
+    }
+    
+    return {
+      id: chatId.toString(),
+      title: chat.title,
+      username: chat.username || null,
+      photo_base64: photoBase64
+    };
+  } catch (e) {
+    console.error('Get group info error:', e);
+    return null;
+  }
 }
 
 // ==================== 用户检测 ====================
 async function checkUser(telegram, db, user, groupId) {
   const reasons = [];
   
-  // 获取群组设置
   const group = await db.prepare('SELECT * FROM groups WHERE id = ?').bind(groupId.toString()).first();
   if (!group) return { passed: true, reasons: [] };
   
-  // 检查白名单
   const whitelist = await db.prepare(
     'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
   ).bind(user.id.toString(), groupId.toString()).first();
   if (whitelist) return { passed: true, reasons: [], whitelisted: true };
   
-  // 检查头像
   if (group.require_avatar) {
     const photos = await telegram.getUserProfilePhotos(user.id);
     if (!photos.ok || photos.result.total_count === 0) {
@@ -262,7 +352,6 @@ async function checkUser(telegram, db, user, groupId) {
     }
   }
   
-  // 检查中文名
   if (group.require_chinese_name) {
     const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
     if (!containsChinese(fullName)) {
@@ -270,7 +359,6 @@ async function checkUser(telegram, db, user, groupId) {
     }
   }
   
-  // 检查违禁词
   if (group.anti_ad) {
     const banWords = await db.prepare('SELECT word FROM ban_words').all();
     const fullName = `${user.first_name || ''} ${user.last_name || ''}`.toLowerCase();
@@ -293,7 +381,7 @@ function calculateBanExpiry(duration) {
   if (duration === '1h') return now + 3600;
   if (duration === '24h') return now + 86400;
   if (duration === '7d') return now + 604800;
-  return now + 86400; // 默认24小时
+  return now + 86400;
 }
 
 // ==================== Webhook 处理 ====================
@@ -304,13 +392,11 @@ async function handleWebhook(request, env) {
   try {
     const update = await request.json();
     
-    // 处理入群请求
     if (update.chat_join_request) {
       const { chat, from } = update.chat_join_request;
       await handleJoinRequest(telegram, db, env, chat, from);
     }
     
-    // 处理 Bot 加入/离开群组
     if (update.my_chat_member) {
       const { chat, new_chat_member } = update.my_chat_member;
       if (new_chat_member.status === 'administrator' || new_chat_member.status === 'member') {
@@ -322,12 +408,10 @@ async function handleWebhook(request, env) {
       }
     }
     
-    // 处理回调查询（重新检测按钮）
     if (update.callback_query) {
       await handleCallbackQuery(telegram, db, env, update.callback_query);
     }
     
-    // 处理命令
     if (update.message && update.message.text) {
       await handleCommand(telegram, db, env, update.message);
     }
@@ -343,6 +427,9 @@ async function handleWebhook(request, env) {
 async function handleJoinRequest(telegram, db, env, chat, user) {
   await addLog(db, 'join', 'request', `用户 ${user.first_name} (${user.id}) 申请加入 ${chat.title}`, user.id.toString(), chat.id.toString());
   
+  // 获取用户头像
+  const userInfo = await getUserInfoWithPhoto(telegram, db, user.id);
+  
   const checkResult = await checkUser(telegram, db, user, chat.id);
   
   if (checkResult.passed) {
@@ -351,23 +438,20 @@ async function handleJoinRequest(telegram, db, env, chat, user) {
   } else {
     await telegram.declineChatJoinRequest(chat.id, user.id);
     
-    // 获取封禁时长
     const group = await db.prepare('SELECT ban_duration FROM groups WHERE id = ?').bind(chat.id.toString()).first();
     const banDuration = group?.ban_duration || '24h';
     const banExpiry = calculateBanExpiry(banDuration);
     
     await telegram.banChatMember(chat.id, user.id, banExpiry);
     
-    // 记录封禁
     const expiryText = banExpiry ? new Date(banExpiry * 1000).toISOString() : null;
     await db.prepare(
-      'INSERT INTO bans (user_id, username, first_name, last_name, group_id, reason, banned_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO bans (user_id, username, first_name, last_name, photo_base64, group_id, reason, banned_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).bind(user.id.toString(), user.username || '', user.first_name || '', user.last_name || '', 
-           chat.id.toString(), checkResult.reasons.join('; '), formatBeijingTime(), expiryText).run();
+           userInfo.photo_base64, chat.id.toString(), checkResult.reasons.join('; '), formatBeijingTime(), expiryText).run();
     
     await addLog(db, 'ban', 'auto_ban', `已封禁用户 ${user.first_name}: ${checkResult.reasons.join(', ')}`, user.id.toString(), chat.id.toString());
     
-    // 通知用户
     try {
       await telegram.sendMessage(user.id, 
         `❌ <b>入群申请被拒绝</b>\n\n` +
@@ -386,8 +470,7 @@ async function handleJoinRequest(telegram, db, env, chat, user) {
       console.log('Cannot send message to user:', e.message);
     }
     
-    // 通知管理员
-    await notifyAdmins(telegram, db, chat.id, user, checkResult.reasons);
+    await notifyAdmins(telegram, db, chat.id, user, checkResult.reasons, userInfo.photo_base64);
   }
 }
 
@@ -399,7 +482,6 @@ async function handleCallbackQuery(telegram, db, env, query) {
     const checkResult = await checkUser(telegram, db, query.from, groupId);
     
     if (checkResult.passed) {
-      // 解封用户
       await telegram.unbanChatMember(groupId, userId);
       await db.prepare('UPDATE bans SET is_active = 0 WHERE user_id = ? AND group_id = ?').bind(userId, groupId).run();
       
@@ -432,9 +514,14 @@ async function handleCommand(telegram, db, env, message) {
   const text = message.text;
   const chatId = message.chat.id;
   const userId = message.from.id;
+  const isPrivate = message.chat.type === 'private';
+  
+  // 只处理私聊命令
+  if (!isPrivate) return;
+  
+  const isAdmin = await checkAdmin(db, env, userId);
   
   if (text === '/start') {
-    const isAdmin = await checkAdmin(db, env, userId);
     if (isAdmin) {
       await telegram.sendMessage(chatId, 
         `🌟 <b>星霜Pro群组管理系统</b>\n\n` +
@@ -451,25 +538,77 @@ async function handleCommand(telegram, db, env, message) {
         `如果您的入群申请被拒绝，请修改个人资料后点击"重新检测"按钮。`
       );
     }
+  } else if (text === '/help') {
+    if (isAdmin) {
+      await telegram.sendMessage(chatId, 
+        `📖 <b>星霜Pro 帮助文档</b>\n\n` +
+        `<b>管理员命令：</b>\n` +
+        `/start - 开始使用\n` +
+        `/panel - 打开Web管理面板\n` +
+        `/status - 查看系统状态\n` +
+        `/help - 显示此帮助\n\n` +
+        `<b>功能说明：</b>\n` +
+        `• 自动审核入群申请\n` +
+        `• 检测用户头像、中文名、违禁词\n` +
+        `• 自动封禁不合规用户\n` +
+        `• 支持白名单管理\n` +
+        `• 支持多群组管理\n` +
+        `• 封禁通知推送\n\n` +
+        `<b>使用方法：</b>\n` +
+        `1. 将Bot添加为群组管理员\n` +
+        `2. 开启群组"加入请求审核"\n` +
+        `3. 在管理面板配置规则`
+      );
+    } else {
+      await telegram.sendMessage(chatId, 
+        `📖 <b>星霜Pro 帮助</b>\n\n` +
+        `本Bot用于群组入群审核。\n\n` +
+        `<b>入群要求：</b>\n` +
+        `• 设置头像\n` +
+        `• 用户名包含中文\n` +
+        `• 不含违禁词\n\n` +
+        `如申请被拒绝，请修改资料后点击"重新检测"按钮。`
+      );
+    }
+  } else if (text === '/panel') {
+    if (isAdmin) {
+      const webAppUrl = env.WEBAPP_URL || 'https://your-worker.workers.dev';
+      await telegram.sendMessage(chatId, 
+        `🌟 <b>星霜Pro 管理面板</b>\n\n` +
+        `点击下方按钮打开管理面板：`,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '🔧 打开管理面板', web_app: { url: webAppUrl } }
+            ]]
+          }
+        }
+      );
+    } else {
+      await telegram.sendMessage(chatId, '❌ 您没有管理员权限');
+    }
   } else if (text === '/status') {
-    const isAdmin = await checkAdmin(db, env, userId);
     if (isAdmin) {
       const groups = await db.prepare('SELECT COUNT(*) as count FROM groups').first();
       const bans = await db.prepare('SELECT COUNT(*) as count FROM bans WHERE is_active = 1').first();
       const whitelist = await db.prepare('SELECT COUNT(*) as count FROM whitelist').first();
+      const webhookInfo = await telegram.getWebhookInfo();
       
       await telegram.sendMessage(chatId, 
         `📊 <b>系统状态</b>\n\n` +
         `群组数量: ${groups.count}\n` +
         `活跃封禁: ${bans.count}\n` +
         `白名单: ${whitelist.count}\n` +
+        `Webhook: ${webhookInfo.ok && webhookInfo.result.url ? '✅ 已连接' : '❌ 未设置'}\n` +
         `运行状态: ✅ 正常`
       );
+    } else {
+      await telegram.sendMessage(chatId, '❌ 您没有管理员权限');
     }
   }
 }
 
-async function notifyAdmins(telegram, db, groupId, user, reasons) {
+async function notifyAdmins(telegram, db, groupId, user, reasons, userPhoto) {
   const notifications = await db.prepare(
     'SELECT admin_id FROM notifications WHERE (group_id IS NULL OR group_id = ?) AND enabled = 1'
   ).bind(groupId.toString()).all();
@@ -505,25 +644,20 @@ async function notifyAdmins(telegram, db, groupId, user, reasons) {
 }
 
 async function syncGroup(telegram, db, chatId) {
-  const chatInfo = await telegram.getChat(chatId);
-  if (!chatInfo.ok) return;
-  
-  const chat = chatInfo.result;
-  let photoUrl = null;
-  
-  if (chat.photo) {
-    const file = await telegram.getFile(chat.photo.small_file_id);
-    if (file.ok) {
-      photoUrl = telegram.getFileUrl(file.result.file_path);
-    }
-  }
+  const groupInfo = await getGroupInfoWithPhoto(telegram, db, chatId);
+  if (!groupInfo) return;
   
   await db.prepare(`
-    INSERT OR REPLACE INTO groups (id, title, username, photo_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM groups WHERE id = ?), ?), ?)
+    INSERT OR REPLACE INTO groups (id, title, username, photo_base64, created_at, updated_at, anti_ad, require_chinese_name, require_avatar, ban_duration)
+    VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM groups WHERE id = ?), ?), ?, 
+            COALESCE((SELECT anti_ad FROM groups WHERE id = ?), 1),
+            COALESCE((SELECT require_chinese_name FROM groups WHERE id = ?), 1),
+            COALESCE((SELECT require_avatar FROM groups WHERE id = ?), 1),
+            COALESCE((SELECT ban_duration FROM groups WHERE id = ?), '24h'))
   `).bind(
-    chatId.toString(), chat.title, chat.username || null, photoUrl,
-    chatId.toString(), formatBeijingTime(), formatBeijingTime()
+    groupInfo.id, groupInfo.title, groupInfo.username, groupInfo.photo_base64,
+    groupInfo.id, formatBeijingTime(), formatBeijingTime(),
+    groupInfo.id, groupInfo.id, groupInfo.id, groupInfo.id
   ).run();
 }
 
@@ -541,7 +675,6 @@ async function handleAPI(request, env, path) {
   const telegram = new TelegramAPI(env.BOT_TOKEN);
   const url = new URL(request.url);
   
-  // CORS
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -552,7 +685,7 @@ async function handleAPI(request, env, path) {
     });
   }
   
-  // 验证会话（除了初始化和登录）
+  // 验证会话
   if (!path.includes('/init') && !path.includes('/auth')) {
     const authHeader = request.headers.get('Authorization');
     if (!authHeader) {
@@ -567,16 +700,13 @@ async function handleAPI(request, env, path) {
   }
   
   try {
-    // 数据库初始化
     if (path === '/api/init') {
       const result = await initDatabase(db);
       return jsonResponse(result);
     }
     
-    // 认证
     if (path === '/api/auth' && request.method === 'POST') {
       const { initData } = await request.json();
-      // 解析 Telegram Web App initData
       const params = new URLSearchParams(initData);
       const userStr = params.get('user');
       if (!userStr) {
@@ -601,7 +731,6 @@ async function handleAPI(request, env, path) {
       return jsonResponse({ token, user, expiresAt });
     }
     
-    // 开发模式登录
     if (path === '/api/auth/dev' && request.method === 'POST') {
       const { userId } = await request.json();
       const isAdmin = await checkAdmin(db, env, userId);
@@ -619,7 +748,6 @@ async function handleAPI(request, env, path) {
       return jsonResponse({ token, user: { id: userId }, expiresAt });
     }
     
-    // 获取统计数据
     if (path === '/api/stats') {
       const groups = await db.prepare('SELECT COUNT(*) as count FROM groups').first();
       const bans = await db.prepare('SELECT COUNT(*) as count FROM bans WHERE is_active = 1').first();
@@ -641,6 +769,13 @@ async function handleAPI(request, env, path) {
       });
     }
     
+    // 获取用户信息（带头像）
+    if (path.startsWith('/api/user/') && request.method === 'GET') {
+      const userId = path.split('/')[3];
+      const userInfo = await getUserInfoWithPhoto(telegram, db, userId);
+      return jsonResponse(userInfo);
+    }
+    
     // ========== 群组管理 ==========
     if (path === '/api/groups') {
       if (request.method === 'GET') {
@@ -655,25 +790,34 @@ async function handleAPI(request, env, path) {
       }
     }
     
-    if (path.startsWith('/api/groups/') && request.method === 'PUT') {
+    if (path.startsWith('/api/groups/') && path.split('/').length === 4) {
       const groupId = path.split('/')[3];
-      const data = await request.json();
-      await db.prepare(`
-        UPDATE groups SET 
-          anti_ad = ?, require_chinese_name = ?, require_avatar = ?, ban_duration = ?, updated_at = ?
-        WHERE id = ?
-      `).bind(
-        data.anti_ad ? 1 : 0, data.require_chinese_name ? 1 : 0, 
-        data.require_avatar ? 1 : 0, data.ban_duration, formatBeijingTime(), groupId
-      ).run();
-      await addLog(db, 'group', 'update', `更新群组设置 ${groupId}`);
-      return jsonResponse({ success: true });
+      
+      if (request.method === 'PUT') {
+        const data = await request.json();
+        await db.prepare(`
+          UPDATE groups SET 
+            anti_ad = ?, require_chinese_name = ?, require_avatar = ?, ban_duration = ?, updated_at = ?
+          WHERE id = ?
+        `).bind(
+          data.anti_ad ? 1 : 0, data.require_chinese_name ? 1 : 0, 
+          data.require_avatar ? 1 : 0, data.ban_duration, formatBeijingTime(), groupId
+        ).run();
+        await addLog(db, 'group', 'update', `更新群组设置 ${groupId}`);
+        return jsonResponse({ success: true });
+      }
+      
+      if (request.method === 'DELETE') {
+        await db.prepare('DELETE FROM groups WHERE id = ?').bind(groupId).run();
+        await addLog(db, 'group', 'delete', `删除群组 ${groupId}`);
+        return jsonResponse({ success: true });
+      }
     }
     
-    if (path.startsWith('/api/groups/') && request.method === 'DELETE') {
+    // 刷新群组信息
+    if (path.startsWith('/api/groups/') && path.endsWith('/refresh') && request.method === 'POST') {
       const groupId = path.split('/')[3];
-      await db.prepare('DELETE FROM groups WHERE id = ?').bind(groupId).run();
-      await addLog(db, 'group', 'delete', `删除群组 ${groupId}`);
+      await syncGroup(telegram, db, groupId);
       return jsonResponse({ success: true });
     }
     
@@ -682,7 +826,7 @@ async function handleAPI(request, env, path) {
       const search = url.searchParams.get('search') || '';
       const groupId = url.searchParams.get('group_id');
       
-      let query = 'SELECT b.*, g.title as group_title FROM bans b LEFT JOIN groups g ON b.group_id = g.id WHERE b.is_active = 1';
+      let query = 'SELECT b.*, g.title as group_title, g.photo_base64 as group_photo FROM bans b LEFT JOIN groups g ON b.group_id = g.id WHERE b.is_active = 1';
       const params = [];
       
       if (search) {
@@ -701,7 +845,7 @@ async function handleAPI(request, env, path) {
       return jsonResponse(bans.results);
     }
     
-    if (path.startsWith('/api/bans/') && request.method === 'DELETE') {
+    if (path.startsWith('/api/bans/') && !path.includes('unban') && request.method === 'DELETE') {
       const banId = path.split('/')[3];
       const ban = await db.prepare('SELECT * FROM bans WHERE id = ?').bind(banId).first();
       if (ban) {
@@ -741,30 +885,22 @@ async function handleAPI(request, env, path) {
       if (request.method === 'POST') {
         const data = await request.json();
         
-        // 批量导入
         if (data.userIds) {
           const ids = data.userIds.split(/[\n,]/).map(id => id.trim()).filter(Boolean);
           for (const userId of ids) {
+            const userInfo = await getUserInfoWithPhoto(telegram, db, userId);
             await db.prepare(
-              'INSERT OR IGNORE INTO whitelist (user_id, group_id, note, created_at) VALUES (?, ?, ?, ?)'
-            ).bind(userId, data.groupId || null, data.note || '', formatBeijingTime()).run();
+              'INSERT OR IGNORE INTO whitelist (user_id, username, first_name, last_name, photo_base64, group_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            ).bind(userId, userInfo.username, userInfo.first_name, userInfo.last_name, userInfo.photo_base64, data.groupId || null, data.note || '', formatBeijingTime()).run();
           }
           await addLog(db, 'whitelist', 'batch_add', `批量添加 ${ids.length} 个用户`);
         } else {
-          // 尝试获取用户信息
-          let userInfo = null;
-          try {
-            const member = await telegram.getChat(data.userId);
-            if (member.ok) {
-              userInfo = member.result;
-            }
-          } catch (e) {}
-          
+          const userInfo = await getUserInfoWithPhoto(telegram, db, data.userId);
           await db.prepare(
-            'INSERT OR REPLACE INTO whitelist (user_id, username, first_name, last_name, group_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'INSERT OR REPLACE INTO whitelist (user_id, username, first_name, last_name, photo_base64, group_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
           ).bind(
-            data.userId, userInfo?.username || data.username || '', 
-            userInfo?.first_name || '', userInfo?.last_name || '',
+            data.userId, userInfo.username || data.username || '', 
+            userInfo.first_name || '', userInfo.last_name || '', userInfo.photo_base64,
             data.groupId || null, data.note || '', formatBeijingTime()
           ).run();
           await addLog(db, 'whitelist', 'add', `添加白名单用户 ${data.userId}`);
@@ -785,22 +921,25 @@ async function handleAPI(request, env, path) {
       if (request.method === 'GET') {
         const admins = await db.prepare('SELECT a.*, g.title as group_title FROM admins a LEFT JOIN groups g ON a.group_id = g.id ORDER BY a.created_at DESC').all();
         const superAdmins = (env.SUPER_ADMINS || '').split(',').map(id => id.trim()).filter(Boolean);
-        return jsonResponse({ admins: admins.results, superAdmins });
+        
+        // 获取超级管理员信息
+        const superAdminInfos = [];
+        for (const id of superAdmins) {
+          const info = await getUserInfoWithPhoto(telegram, db, id);
+          superAdminInfos.push(info);
+        }
+        
+        return jsonResponse({ admins: admins.results, superAdmins: superAdminInfos });
       }
       if (request.method === 'POST') {
         const data = await request.json();
-        
-        let userInfo = null;
-        try {
-          const member = await telegram.getChat(data.userId);
-          if (member.ok) userInfo = member.result;
-        } catch (e) {}
+        const userInfo = await getUserInfoWithPhoto(telegram, db, data.userId);
         
         await db.prepare(
-          'INSERT OR REPLACE INTO admins (user_id, username, first_name, last_name, group_id, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+          'INSERT OR REPLACE INTO admins (user_id, username, first_name, last_name, photo_base64, group_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).bind(
-          data.userId, userInfo?.username || '', userInfo?.first_name || '',
-          userInfo?.last_name || '', data.groupId || null, formatBeijingTime()
+          data.userId, userInfo.username, userInfo.first_name,
+          userInfo.last_name, userInfo.photo_base64, data.groupId || null, formatBeijingTime()
         ).run();
         await addLog(db, 'admin', 'add', `添加管理员 ${data.userId}`);
         return jsonResponse({ success: true });
@@ -824,17 +963,45 @@ async function handleAPI(request, env, path) {
     // ========== 通知设置 ==========
     if (path === '/api/notifications') {
       if (request.method === 'GET') {
+        // 获取所有管理员（包括超级管理员）
+        const admins = await db.prepare('SELECT * FROM admins ORDER BY created_at DESC').all();
+        const superAdmins = (env.SUPER_ADMINS || '').split(',').map(id => id.trim()).filter(Boolean);
+        
+        // 获取现有通知设置
         const notifications = await db.prepare(
           'SELECT n.*, g.title as group_title FROM notifications n LEFT JOIN groups g ON n.group_id = g.id ORDER BY n.created_at DESC'
         ).all();
-        return jsonResponse(notifications.results);
+        
+        // 合并所有管理员ID
+        const allAdminIds = new Set([
+          ...superAdmins,
+          ...admins.results.map(a => a.user_id)
+        ]);
+        
+        // 获取管理员信息
+        const adminInfos = [];
+        for (const adminId of allAdminIds) {
+          const info = await getUserInfoWithPhoto(telegram, db, adminId);
+          const notif = notifications.results.find(n => n.admin_id === adminId && !n.group_id);
+          adminInfos.push({
+            ...info,
+            notification_id: notif?.id || null,
+            enabled: notif ? notif.enabled : 0,
+            is_super: superAdmins.includes(adminId)
+          });
+        }
+        
+        return jsonResponse({ 
+          admins: adminInfos,
+          notifications: notifications.results 
+        });
       }
       if (request.method === 'POST') {
         const data = await request.json();
         await db.prepare(
           'INSERT OR REPLACE INTO notifications (admin_id, group_id, enabled, created_at) VALUES (?, ?, ?, ?)'
         ).bind(data.adminId, data.groupId || null, data.enabled ? 1 : 0, formatBeijingTime()).run();
-        await addLog(db, 'notification', 'add', `添加通知设置`);
+        await addLog(db, 'notification', 'update', `更新通知设置`);
         return jsonResponse({ success: true });
       }
     }
@@ -1033,6 +1200,17 @@ function getHTML() {
       justify-content: center;
       font-weight: bold;
       color: white;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .avatar-lg {
+      width: 48px;
+      height: 48px;
     }
     .stat-card {
       background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
@@ -1046,9 +1224,38 @@ function getHTML() {
       outline: none;
       border-color: #667eea;
     }
+    input::placeholder, textarea::placeholder {
+      color: rgba(255,255,255,0.4);
+    }
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
+    .loading-spinner {
+      border: 2px solid rgba(255,255,255,0.1);
+      border-top: 2px solid #667eea;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .fade-update {
+      animation: fadeUpdate 0.3s ease;
+    }
+    @keyframes fadeUpdate {
+      0% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+    .user-tag {
+      background: rgba(102, 126, 234, 0.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
   </style>
 </head>
 <body class="text-white p-4">
@@ -1078,11 +1285,11 @@ function getHTML() {
             <p class="text-xs text-gray-400">群组管理系统</p>
           </div>
         </div>
-        <button onclick="refreshData()" class="p-2 rounded-lg glass hover:bg-white/10">🔄</button>
+        <button onclick="manualRefresh()" id="refreshBtn" class="p-2 rounded-lg glass hover:bg-white/10">🔄</button>
       </header>
 
       <!-- 标签页导航 -->
-      <div class="flex gap-2 overflow-x-auto pb-2 mb-6">
+      <div class="flex gap-2 overflow-x-auto pb-2 mb-6 scrollbar-hide">
         <button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="dashboard" onclick="switchTab('dashboard')">📊 控制面板</button>
         <button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="groups" onclick="switchTab('groups')">👥 群组管理</button>
         <button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="bans" onclick="switchTab('bans')">🚫 封禁管理</button>
@@ -1107,8 +1314,42 @@ function getHTML() {
     // ==================== 全局状态 ====================
     let token = localStorage.getItem('token');
     let currentTab = 'dashboard';
-    let cache = {};
-    let autoRefreshTimer = null;
+    let dataCache = {};
+    let isRefreshing = false;
+
+    // ==================== 头像渲染辅助函数 ====================
+    function renderAvatar(photoBase64, name, size = '') {
+      const sizeClass = size === 'lg' ? 'avatar-lg' : '';
+      const initial = (name || '?')[0].toUpperCase();
+      if (photoBase64) {
+        return '<div class="avatar ' + sizeClass + '"><img src="' + photoBase64 + '" alt="avatar" onerror="this.parentElement.innerHTML=\\'' + initial + '\\'"></div>';
+      }
+      return '<div class="avatar ' + sizeClass + '">' + initial + '</div>';
+    }
+
+    function renderUserInfo(user, showId = true) {
+      const name = ((user.first_name || '') + ' ' + (user.last_name || '')).trim() || '未知用户';
+      const username = user.username ? '@' + user.username : '';
+      const userId = user.user_id || user.id || '';
+      
+      return '<div class="flex items-center gap-3">' +
+        renderAvatar(user.photo_base64, name) +
+        '<div class="min-w-0 flex-1">' +
+          '<div class="font-medium truncate">' + escapeHtml(name) + '</div>' +
+          '<div class="text-xs text-gray-400 flex flex-wrap gap-2">' +
+            (username ? '<span class="user-tag">' + escapeHtml(username) + '</span>' : '') +
+            (showId && userId ? '<span>ID: ' + userId + '</span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
 
     // ==================== API 调用 ====================
     async function api(path, options = {}) {
@@ -1120,6 +1361,7 @@ function getHTML() {
         const data = await res.json();
         if (res.status === 401) {
           localStorage.removeItem('token');
+          token = null;
           location.reload();
         }
         return data;
@@ -1131,10 +1373,8 @@ function getHTML() {
 
     // ==================== 认证 ====================
     async function init() {
-      // 尝试初始化数据库
       await api('/init');
       
-      // 检查 Telegram Web App
       if (window.Telegram?.WebApp?.initData) {
         Telegram.WebApp.ready();
         Telegram.WebApp.expand();
@@ -1156,13 +1396,13 @@ function getHTML() {
           document.getElementById('loginStatus').textContent = '认证失败';
         }
       } else if (token) {
-        // 尝试使用已有 token
         try {
           const stats = await api('/stats');
           if (!stats.error) {
             showMainPage();
           } else {
             localStorage.removeItem('token');
+            token = null;
             showDevLogin();
           }
         } catch (e) {
@@ -1204,7 +1444,6 @@ function getHTML() {
       document.getElementById('loginPage').classList.add('hidden');
       document.getElementById('mainPage').classList.remove('hidden');
       switchTab('dashboard');
-      startAutoRefresh();
     }
 
     // ==================== 标签页切换 ====================
@@ -1214,12 +1453,14 @@ function getHTML() {
         t.classList.remove('tab-active');
         if (t.dataset.tab === tab) t.classList.add('tab-active');
       });
-      loadTabContent();
+      loadTabContent(true);
     }
 
-    async function loadTabContent() {
+    async function loadTabContent(showLoading = false) {
       const content = document.getElementById('content');
-      content.innerHTML = '<div class="text-center py-10">加载中...</div>';
+      if (showLoading) {
+        content.innerHTML = '<div class="text-center py-10"><div class="loading-spinner"></div><div class="mt-2 text-gray-400">加载中...</div></div>';
+      }
       
       try {
         switch (currentTab) {
@@ -1232,9 +1473,29 @@ function getHTML() {
           case 'banwords': await loadBanwords(); break;
           case 'logs': await loadLogs(); break;
         }
+        content.classList.add('fade-update');
+        setTimeout(() => content.classList.remove('fade-update'), 300);
       } catch (e) {
-        content.innerHTML = '<div class="text-center py-10 text-red-400">加载失败</div>';
+        console.error('Load error:', e);
+        if (showLoading) {
+          content.innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        }
       }
+    }
+
+    // 手动刷新（带提示）
+    async function manualRefresh() {
+      if (isRefreshing) return;
+      isRefreshing = true;
+      const btn = document.getElementById('refreshBtn');
+      btn.innerHTML = '<div class="loading-spinner"></div>';
+      
+      dataCache = {};
+      await loadTabContent(false);
+      
+      btn.innerHTML = '🔄';
+      isRefreshing = false;
+      showToast('数据已刷新');
     }
 
     // ==================== 控制面板 ====================
@@ -1242,139 +1503,152 @@ function getHTML() {
       const stats = await api('/stats');
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-          <div class="stat-card card p-4 text-center">
-            <div class="text-3xl mb-2">👥</div>
-            <div class="text-2xl font-bold">\${stats.groups || 0}</div>
-            <div class="text-gray-400 text-sm">群组数量</div>
-          </div>
-          <div class="stat-card card p-4 text-center">
-            <div class="text-3xl mb-2">🚫</div>
-            <div class="text-2xl font-bold">\${stats.bans || 0}</div>
-            <div class="text-gray-400 text-sm">封禁记录</div>
-          </div>
-          <div class="stat-card card p-4 text-center">
-            <div class="text-3xl mb-2">✅</div>
-            <div class="text-2xl font-bold">\${stats.whitelist || 0}</div>
-            <div class="text-gray-400 text-sm">白名单</div>
-          </div>
-          <div class="stat-card card p-4 text-center">
-            <div class="text-3xl mb-2">👑</div>
-            <div class="text-2xl font-bold">\${stats.admins || 0}</div>
-            <div class="text-gray-400 text-sm">管理员</div>
-          </div>
-          <div class="stat-card card p-4 text-center">
-            <div class="text-3xl mb-2">📝</div>
-            <div class="text-2xl font-bold">\${stats.banWords || 0}</div>
-            <div class="text-gray-400 text-sm">违禁词</div>
-          </div>
-          <div class="stat-card card p-4 text-center">
-            <div class="text-3xl mb-2">📋</div>
-            <div class="text-2xl font-bold">\${stats.logs || 0}</div>
-            <div class="text-gray-400 text-sm">日志记录</div>
-          </div>
-        </div>
+      content.innerHTML = 
+        '<div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">👥</div>' +
+            '<div class="text-2xl font-bold">' + (stats.groups || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">群组数量</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">🚫</div>' +
+            '<div class="text-2xl font-bold">' + (stats.bans || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">封禁记录</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">✅</div>' +
+            '<div class="text-2xl font-bold">' + (stats.whitelist || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">白名单</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">👑</div>' +
+            '<div class="text-2xl font-bold">' + (stats.admins || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">管理员</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">📝</div>' +
+            '<div class="text-2xl font-bold">' + (stats.banWords || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">违禁词</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">📋</div>' +
+            '<div class="text-2xl font-bold">' + (stats.logs || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">日志记录</div>' +
+          '</div>' +
+        '</div>' +
         
-        <div class="card p-4 mb-4">
-          <h3 class="font-bold mb-3">🔗 Webhook 状态</h3>
-          <div class="text-sm">
-            <div class="flex justify-between py-2 border-b border-white/10">
-              <span class="text-gray-400">状态</span>
-              <span>\${stats.webhook?.url ? '✅ 已连接' : '❌ 未设置'}</span>
-            </div>
-            \${stats.webhook?.url ? \`
-              <div class="flex justify-between py-2 border-b border-white/10">
-                <span class="text-gray-400">URL</span>
-                <span class="text-xs truncate max-w-[200px]">\${stats.webhook.url}</span>
-              </div>
-              <div class="flex justify-between py-2">
-                <span class="text-gray-400">待处理更新</span>
-                <span>\${stats.webhook.pending_update_count || 0}</span>
-              </div>
-            \` : ''}
-          </div>
-          <button onclick="showSetWebhookModal()" class="btn-primary w-full py-2 rounded-lg mt-3">设置 Webhook</button>
-        </div>
+        '<div class="card p-4 mb-4">' +
+          '<h3 class="font-bold mb-3">🔗 Webhook 状态</h3>' +
+          '<div class="text-sm">' +
+            '<div class="flex justify-between py-2 border-b border-white/10">' +
+              '<span class="text-gray-400">状态</span>' +
+              '<span>' + (stats.webhook?.url ? '✅ 已连接' : '❌ 未设置') + '</span>' +
+            '</div>' +
+            (stats.webhook?.url ? 
+              '<div class="flex justify-between py-2 border-b border-white/10">' +
+                '<span class="text-gray-400">URL</span>' +
+                '<span class="text-xs truncate max-w-[200px]">' + stats.webhook.url + '</span>' +
+              '</div>' +
+              '<div class="flex justify-between py-2">' +
+                '<span class="text-gray-400">待处理更新</span>' +
+                '<span>' + (stats.webhook.pending_update_count || 0) + '</span>' +
+              '</div>' : '') +
+          '</div>' +
+          '<button onclick="showSetWebhookModal()" class="btn-primary w-full py-2 rounded-lg mt-3">设置 Webhook</button>' +
+        '</div>' +
         
-        <div class="card p-4">
-          <h3 class="font-bold mb-3">⚙️ 快捷操作</h3>
-          <div class="grid grid-cols-2 gap-3">
-            <button onclick="switchTab('groups')" class="glass p-3 rounded-lg text-center hover:bg-white/10">
-              <div class="text-2xl mb-1">➕</div>
-              <div class="text-sm">添加群组</div>
-            </button>
-            <button onclick="switchTab('whitelist')" class="glass p-3 rounded-lg text-center hover:bg-white/10">
-              <div class="text-2xl mb-1">📋</div>
-              <div class="text-sm">管理白名单</div>
-            </button>
-            <button onclick="switchTab('banwords')" class="glass p-3 rounded-lg text-center hover:bg-white/10">
-              <div class="text-2xl mb-1">📝</div>
-              <div class="text-sm">编辑违禁词</div>
-            </button>
-            <button onclick="switchTab('logs')" class="glass p-3 rounded-lg text-center hover:bg-white/10">
-              <div class="text-2xl mb-1">📊</div>
-              <div class="text-sm">查看日志</div>
-            </button>
-          </div>
-        </div>
-      \`;
+        '<div class="card p-4">' +
+          '<h3 class="font-bold mb-3">⚙️ 快捷操作</h3>' +
+          '<div class="grid grid-cols-2 gap-3">' +
+            '<button onclick="switchTab(\\'groups\\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+              '<div class="text-2xl mb-1">➕</div>' +
+              '<div class="text-sm">添加群组</div>' +
+            '</button>' +
+            '<button onclick="switchTab(\\'whitelist\\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+              '<div class="text-2xl mb-1">📋</div>' +
+              '<div class="text-sm">管理白名单</div>' +
+            '</button>' +
+            '<button onclick="switchTab(\\'banwords\\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+              '<div class="text-2xl mb-1">📝</div>' +
+              '<div class="text-sm">编辑违禁词</div>' +
+            '</button>' +
+            '<button onclick="switchTab(\\'logs\\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+              '<div class="text-2xl mb-1">📊</div>' +
+              '<div class="text-sm">查看日志</div>' +
+            '</button>' +
+          '</div>' +
+        '</div>';
     }
 
     // ==================== 群组管理 ====================
     async function loadGroups() {
       const groups = await api('/groups');
+      dataCache.groups = groups;
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-lg font-bold">群组管理</h2>
-          <button onclick="showAddGroupModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加群组</button>
-        </div>
-        <div class="space-y-3">
-          \${groups.length === 0 ? '<div class="text-center py-10 text-gray-400">暂无群组</div>' : 
-            groups.map(g => \`
-              <div class="card p-4">
-                <div class="flex items-center gap-3 mb-3">
-                  <div class="avatar">\${g.title?.[0] || '?'}</div>
-                  <div class="flex-1 min-w-0">
-                    <div class="font-bold truncate">\${g.title || '未知群组'}</div>
-                    <div class="text-xs text-gray-400">ID: \${g.id}</div>
-                  </div>
-                </div>
-                <div class="grid grid-cols-2 gap-2 text-sm mb-3">
-                  <div class="flex justify-between items-center">
-                    <span class="text-gray-400">防广告</span>
-                    <div class="switch \${g.anti_ad ? 'on' : ''}" onclick="toggleGroupSetting('\${g.id}', 'anti_ad', \${!g.anti_ad})"></div>
-                  </div>
-                  <div class="flex justify-between items-center">
-                    <span class="text-gray-400">中文名</span>
-                    <div class="switch \${g.require_chinese_name ? 'on' : ''}" onclick="toggleGroupSetting('\${g.id}', 'require_chinese_name', \${!g.require_chinese_name})"></div>
-                  </div>
-                  <div class="flex justify-between items-center">
-                    <span class="text-gray-400">头像</span>
-                    <div class="switch \${g.require_avatar ? 'on' : ''}" onclick="toggleGroupSetting('\${g.id}', 'require_avatar', \${!g.require_avatar})"></div>
-                  </div>
-                  <div class="flex justify-between items-center">
-                    <span class="text-gray-400">封禁</span>
-                    <select onchange="updateBanDuration('\${g.id}', this.value)" class="px-2 py-1 rounded text-xs">
-                      <option value="1h" \${g.ban_duration === '1h' ? 'selected' : ''}>1小时</option>
-                      <option value="24h" \${g.ban_duration === '24h' ? 'selected' : ''}>24小时</option>
-                      <option value="7d" \${g.ban_duration === '7d' ? 'selected' : ''}>7天</option>
-                      <option value="forever" \${g.ban_duration === 'forever' ? 'selected' : ''}>永久</option>
-                    </select>
-                  </div>
-                </div>
-                <button onclick="deleteGroup('\${g.id}')" class="btn-danger w-full py-2 rounded-lg text-sm">删除群组</button>
-              </div>
-            \`).join('')}
-        </div>
-      \`;
+      let html = '<div class="flex justify-between items-center mb-4">' +
+        '<h2 class="text-lg font-bold">群组管理</h2>' +
+        '<button onclick="showAddGroupModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加群组</button>' +
+      '</div><div class="space-y-3">';
+      
+      if (groups.length === 0) {
+        html += '<div class="text-center py-10 text-gray-400">暂无群组，请先将Bot添加到群组</div>';
+      } else {
+        groups.forEach(function(g) {
+          html += '<div class="card p-4">' +
+            '<div class="flex items-center gap-3 mb-3">' +
+              renderAvatar(g.photo_base64, g.title, 'lg') +
+              '<div class="flex-1 min-w-0">' +
+                '<div class="font-bold truncate">' + escapeHtml(g.title || '未知群组') + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (g.username ? '<span class="user-tag">@' + g.username + '</span> ' : '') +
+                  'ID: ' + g.id +
+                '</div>' +
+              '</div>' +
+              '<button onclick="refreshGroup(\\'' + g.id + '\\')" class="p-2 rounded-lg glass hover:bg-white/10 text-sm" title="刷新群组信息">🔄</button>' +
+            '</div>' +
+            '<div class="grid grid-cols-2 gap-2 text-sm mb-3">' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">防广告</span>' +
+                '<div class="switch ' + (g.anti_ad ? 'on' : '') + '" onclick="toggleGroupSetting(\\'' + g.id + '\\', \\'anti_ad\\', ' + (!g.anti_ad) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">中文名</span>' +
+                '<div class="switch ' + (g.require_chinese_name ? 'on' : '') + '" onclick="toggleGroupSetting(\\'' + g.id + '\\', \\'require_chinese_name\\', ' + (!g.require_chinese_name) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">头像</span>' +
+                '<div class="switch ' + (g.require_avatar ? 'on' : '') + '" onclick="toggleGroupSetting(\\'' + g.id + '\\', \\'require_avatar\\', ' + (!g.require_avatar) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">封禁</span>' +
+                '<select onchange="updateBanDuration(\\'' + g.id + '\\', this.value)" class="px-2 py-1 rounded text-xs">' +
+                  '<option value="1h"' + (g.ban_duration === '1h' ? ' selected' : '') + '>1小时</option>' +
+                  '<option value="24h"' + (g.ban_duration === '24h' ? ' selected' : '') + '>24小时</option>' +
+                  '<option value="7d"' + (g.ban_duration === '7d' ? ' selected' : '') + '>7天</option>' +
+                  '<option value="forever"' + (g.ban_duration === 'forever' ? ' selected' : '') + '>永久</option>' +
+                '</select>' +
+              '</div>' +
+            '</div>' +
+            '<button onclick="deleteGroup(\\'' + g.id + '\\')" class="btn-danger w-full py-2 rounded-lg text-sm">删除群组</button>' +
+          '</div>';
+        });
+      }
+      
+      html += '</div>';
+      content.innerHTML = html;
+    }
+
+    async function refreshGroup(groupId) {
+      showToast('正在刷新...');
+      await api('/groups/' + groupId + '/refresh', { method: 'POST' });
+      await loadGroups();
+      showToast('群组信息已更新');
     }
 
     async function toggleGroupSetting(groupId, setting, value) {
-      const groups = await api('/groups');
-      const group = groups.find(g => g.id === groupId);
+      const groups = dataCache.groups || await api('/groups');
+      const group = groups.find(function(g) { return g.id === groupId; });
       if (!group) return;
       
       const data = {
@@ -1387,12 +1661,12 @@ function getHTML() {
       
       await api('/groups/' + groupId, { method: 'PUT', body: JSON.stringify(data) });
       showToast('设置已更新');
-      loadGroups();
+      await loadGroups();
     }
 
     async function updateBanDuration(groupId, duration) {
-      const groups = await api('/groups');
-      const group = groups.find(g => g.id === groupId);
+      const groups = dataCache.groups || await api('/groups');
+      const group = groups.find(function(g) { return g.id === groupId; });
       if (!group) return;
       
       await api('/groups/' + groupId, {
@@ -1411,229 +1685,264 @@ function getHTML() {
       if (!confirm('确定要删除此群组吗？')) return;
       await api('/groups/' + groupId, { method: 'DELETE' });
       showToast('群组已删除');
-      loadGroups();
+      await loadGroups();
     }
 
     function showAddGroupModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">添加群组</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">群组 ID</label>
-            <input type="text" id="newGroupId" placeholder="例如: -1001234567890" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <div class="text-xs text-gray-400">
-            提示：需要先将 Bot 添加为群组管理员
-          </div>
-          <button onclick="addGroup()" class="btn-primary w-full py-2 rounded-lg">添加</button>
-        </div>
-      \`);
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加群组</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">群组 ID</label>' +
+            '<input type="text" id="newGroupId" placeholder="例如: -1001234567890" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div class="text-xs text-gray-400">' +
+            '提示：需要先将 Bot 添加为群组管理员' +
+          '</div>' +
+          '<button onclick="addGroup()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
     }
 
     async function addGroup() {
       const groupId = document.getElementById('newGroupId').value.trim();
       if (!groupId) return showToast('请输入群组ID', 'error');
       
-      const result = await api('/groups', { method: 'POST', body: JSON.stringify({ groupId }) });
+      const result = await api('/groups', { method: 'POST', body: JSON.stringify({ groupId: groupId }) });
       if (result.error) {
         showToast(result.error, 'error');
       } else {
         showToast('群组添加成功');
         closeModal();
-        loadGroups();
+        await loadGroups();
       }
     }
 
     // ==================== 封禁管理 ====================
     async function loadBans() {
       const bans = await api('/bans');
-      const groups = await api('/groups');
+      const groups = dataCache.groups || await api('/groups');
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="flex flex-col md:flex-row gap-4 mb-4">
-          <input type="text" id="banSearch" placeholder="搜索用户ID/用户名..." class="flex-1 px-4 py-2 rounded-lg" onkeyup="searchBans()">
-          <select id="banGroupFilter" class="px-4 py-2 rounded-lg" onchange="filterBans()">
-            <option value="">所有群组</option>
-            \${groups.map(g => \`<option value="\${g.id}">\${g.title}</option>\`).join('')}
-          </select>
-        </div>
-        <div id="bansList" class="space-y-3">
-          \${renderBansList(bans)}
-        </div>
-      \`;
+      let html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
+        '<input type="text" id="banSearch" placeholder="搜索用户ID/用户名..." class="flex-1 px-4 py-2 rounded-lg" onkeyup="debounceSearch(searchBans)">' +
+        '<select id="banGroupFilter" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
+          '<option value="">所有群组</option>';
+      
+      groups.forEach(function(g) {
+        html += '<option value="' + g.id + '">' + escapeHtml(g.title) + '</option>';
+      });
+      
+      html += '</select></div><div id="bansList" class="space-y-3">' + renderBansList(bans, groups) + '</div>';
+      content.innerHTML = html;
     }
 
-    function renderBansList(bans) {
+    function renderBansList(bans, groups) {
       if (bans.length === 0) return '<div class="text-center py-10 text-gray-400">暂无封禁记录</div>';
       
-      // 按群组分组
       const grouped = {};
-      bans.forEach(b => {
+      bans.forEach(function(b) {
         const key = b.group_id;
-        if (!grouped[key]) grouped[key] = { title: b.group_title || b.group_id, bans: [] };
+        if (!grouped[key]) grouped[key] = { title: b.group_title || b.group_id, photo: b.group_photo, bans: [] };
         grouped[key].bans.push(b);
       });
       
-      return Object.entries(grouped).map(([groupId, data]) => \`
-        <div class="card p-4">
-          <h3 class="font-bold mb-3 flex items-center gap-2">
-            <span class="avatar text-sm">\${data.title?.[0] || '?'}</span>
-            \${data.title}
-            <span class="text-xs text-gray-400">(\${data.bans.length})</span>
-          </h3>
-          <div class="space-y-2">
-            \${data.bans.map(b => \`
-              <div class="glass p-3 rounded-lg">
-                <div class="flex justify-between items-start mb-2">
-                  <div>
-                    <div class="font-medium">\${b.first_name || ''} \${b.last_name || ''}</div>
-                    <div class="text-xs text-gray-400">@\${b.username || '无'} · ID: \${b.user_id}</div>
-                  </div>
-                  <div class="flex gap-2">
-                    <button onclick="unbanUser('\${b.group_id}', '\${b.user_id}')" class="btn-success px-2 py-1 rounded text-xs">解封</button>
-                    <button onclick="deleteBan(\${b.id})" class="btn-danger px-2 py-1 rounded text-xs">删除</button>
-                  </div>
-                </div>
-                <div class="text-xs text-gray-400">
-                  <div>原因: \${b.reason || '未知'}</div>
-                  <div>时间: \${b.banned_at}</div>
-                </div>
-              </div>
-            \`).join('')}
-          </div>
-        </div>
-      \`).join('');
+      let html = '';
+      Object.keys(grouped).forEach(function(groupId) {
+        const data = grouped[groupId];
+        html += '<div class="card p-4">' +
+          '<h3 class="font-bold mb-3 flex items-center gap-2">' +
+            renderAvatar(data.photo, data.title) +
+            '<span>' + escapeHtml(data.title) + '</span>' +
+            '<span class="text-xs text-gray-400">(' + data.bans.length + ')</span>' +
+          '</h3>' +
+          '<div class="space-y-2">';
+        
+        data.bans.forEach(function(b) {
+          const name = ((b.first_name || '') + ' ' + (b.last_name || '')).trim() || '未知';
+          html += '<div class="glass p-3 rounded-lg">' +
+            '<div class="flex justify-between items-start mb-2">' +
+              '<div class="flex items-center gap-3">' +
+                renderAvatar(b.photo_base64, name) +
+                '<div>' +
+                  '<div class="font-medium">' + escapeHtml(name) + '</div>' +
+                  '<div class="text-xs text-gray-400">' +
+                    (b.username ? '<span class="user-tag">@' + b.username + '</span> ' : '') +
+                    'ID: ' + b.user_id +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="flex gap-2">' +
+                '<button onclick="unbanUser(\\'' + b.group_id + '\\', \\'' + b.user_id + '\\')" class="btn-success px-2 py-1 rounded text-xs">解封</button>' +
+                '<button onclick="deleteBan(' + b.id + ')" class="btn-danger px-2 py-1 rounded text-xs">删除</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="text-xs text-gray-400">' +
+              '<div>原因: ' + escapeHtml(b.reason || '未知') + '</div>' +
+              '<div>时间: ' + (b.banned_at || '') + '</div>' +
+            '</div>' +
+          '</div>';
+        });
+        
+        html += '</div></div>';
+      });
+      
+      return html;
+    }
+
+    let searchTimer = null;
+    function debounceSearch(fn) {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(fn, 300);
     }
 
     async function searchBans() {
       const search = document.getElementById('banSearch').value;
       const groupId = document.getElementById('banGroupFilter').value;
-      const bans = await api(\`/bans?search=\${encodeURIComponent(search)}&group_id=\${groupId}\`);
-      document.getElementById('bansList').innerHTML = renderBansList(bans);
+      const bans = await api('/bans?search=' + encodeURIComponent(search) + '&group_id=' + groupId);
+      const groups = dataCache.groups || [];
+      document.getElementById('bansList').innerHTML = renderBansList(bans, groups);
     }
 
     async function filterBans() {
-      searchBans();
+      await searchBans();
     }
 
     async function unbanUser(groupId, userId) {
-      await api('/bans/unban', { method: 'POST', body: JSON.stringify({ groupId, userId }) });
+      await api('/bans/unban', { method: 'POST', body: JSON.stringify({ groupId: groupId, userId: userId }) });
       showToast('用户已解封');
-      loadBans();
+      await loadBans();
     }
 
     async function deleteBan(banId) {
       if (!confirm('确定要删除此封禁记录吗？')) return;
       await api('/bans/' + banId, { method: 'DELETE' });
       showToast('记录已删除');
-      loadBans();
+      await loadBans();
     }
 
     // ==================== 白名单管理 ====================
     async function loadWhitelist() {
       const whitelist = await api('/whitelist');
-      const groups = await api('/groups');
+      const groups = dataCache.groups || await api('/groups');
+      dataCache.groups = groups;
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="flex flex-col md:flex-row gap-4 mb-4">
-          <input type="text" id="whitelistSearch" placeholder="搜索..." class="flex-1 px-4 py-2 rounded-lg" onkeyup="searchWhitelist()">
-          <button onclick="showAddWhitelistModal()" class="btn-primary px-4 py-2 rounded-lg">➕ 添加</button>
-          <button onclick="showBatchImportModal()" class="btn-success px-4 py-2 rounded-lg">📥 批量导入</button>
-        </div>
-        <div id="whitelistList" class="grid gap-3 md:grid-cols-2">
-          \${whitelist.length === 0 ? '<div class="text-center py-10 text-gray-400 col-span-2">暂无白名单用户</div>' :
-            whitelist.map(w => \`
-              <div class="card p-4">
-                <div class="flex items-center gap-3">
-                  <div class="avatar">\${w.first_name?.[0] || w.user_id?.[0] || '?'}</div>
-                  <div class="flex-1 min-w-0">
-                    <div class="font-medium truncate">\${w.first_name || ''} \${w.last_name || ''}</div>
-                    <div class="text-xs text-gray-400">ID: \${w.user_id}</div>
-                    <div class="text-xs text-gray-400">\${w.group_title ? '群组: ' + w.group_title : '全局白名单'}</div>
-                    \${w.note ? \`<div class="text-xs text-blue-400">备注: \${w.note}</div>\` : ''}
-                  </div>
-                  <button onclick="deleteWhitelist(\${w.id})" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>
-                </div>
-              </div>
-            \`).join('')}
-        </div>
-      \`;
+      let html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
+        '<input type="text" id="whitelistSearch" placeholder="搜索..." class="flex-1 px-4 py-2 rounded-lg" onkeyup="debounceSearch(searchWhitelist)">' +
+        '<button onclick="showAddWhitelistModal()" class="btn-primary px-4 py-2 rounded-lg">➕ 添加</button>' +
+        '<button onclick="showBatchImportModal()" class="btn-success px-4 py-2 rounded-lg">📥 批量导入</button>' +
+      '</div><div id="whitelistList" class="grid gap-3 md:grid-cols-2">';
+      
+      if (whitelist.length === 0) {
+        html += '<div class="text-center py-10 text-gray-400 col-span-2">暂无白名单用户</div>';
+      } else {
+        whitelist.forEach(function(w) {
+          const name = ((w.first_name || '') + ' ' + (w.last_name || '')).trim() || '用户 ' + w.user_id;
+          html += '<div class="card p-4">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(w.photo_base64, name) +
+              '<div class="flex-1 min-w-0">' +
+                '<div class="font-medium truncate">' + escapeHtml(name) + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (w.username ? '<span class="user-tag">@' + w.username + '</span> ' : '') +
+                  'ID: ' + w.user_id +
+                '</div>' +
+                '<div class="text-xs text-gray-400">' + (w.group_title ? '群组: ' + escapeHtml(w.group_title) : '全局白名单') + '</div>' +
+                (w.note ? '<div class="text-xs text-blue-400">备注: ' + escapeHtml(w.note) + '</div>' : '') +
+              '</div>' +
+              '<button onclick="deleteWhitelist(' + w.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' +
+            '</div>' +
+          '</div>';
+        });
+      }
+      
+      html += '</div>';
+      content.innerHTML = html;
     }
 
     async function searchWhitelist() {
       const search = document.getElementById('whitelistSearch').value;
-      const whitelist = await api(\`/whitelist?search=\${encodeURIComponent(search)}\`);
-      document.getElementById('whitelistList').innerHTML = whitelist.length === 0 ? 
-        '<div class="text-center py-10 text-gray-400 col-span-2">无匹配结果</div>' :
-        whitelist.map(w => \`
-          <div class="card p-4">
-            <div class="flex items-center gap-3">
-              <div class="avatar">\${w.first_name?.[0] || w.user_id?.[0] || '?'}</div>
-              <div class="flex-1 min-w-0">
-                <div class="font-medium truncate">\${w.first_name || ''} \${w.last_name || ''}</div>
-                <div class="text-xs text-gray-400">ID: \${w.user_id}</div>
-                <div class="text-xs text-gray-400">\${w.group_title ? '群组: ' + w.group_title : '全局白名单'}</div>
-              </div>
-              <button onclick="deleteWhitelist(\${w.id})" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>
-            </div>
-          </div>
-        \`).join('');
+      const whitelist = await api('/whitelist?search=' + encodeURIComponent(search));
+      
+      let html = '';
+      if (whitelist.length === 0) {
+        html = '<div class="text-center py-10 text-gray-400 col-span-2">无匹配结果</div>';
+      } else {
+        whitelist.forEach(function(w) {
+          const name = ((w.first_name || '') + ' ' + (w.last_name || '')).trim() || '用户 ' + w.user_id;
+          html += '<div class="card p-4">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(w.photo_base64, name) +
+              '<div class="flex-1 min-w-0">' +
+                '<div class="font-medium truncate">' + escapeHtml(name) + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (w.username ? '<span class="user-tag">@' + w.username + '</span> ' : '') +
+                  'ID: ' + w.user_id +
+                '</div>' +
+                '<div class="text-xs text-gray-400">' + (w.group_title ? '群组: ' + escapeHtml(w.group_title) : '全局白名单') + '</div>' +
+              '</div>' +
+              '<button onclick="deleteWhitelist(' + w.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' +
+            '</div>' +
+          '</div>';
+        });
+      }
+      document.getElementById('whitelistList').innerHTML = html;
     }
 
     function showAddWhitelistModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">添加白名单</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">用户 ID</label>
-            <input type="text" id="wlUserId" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">适用群组（留空为全局）</label>
-            <select id="wlGroupId" class="w-full px-4 py-2 rounded-lg">
-              <option value="">全局</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">备注</label>
-            <input type="text" id="wlNote" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <button onclick="addWhitelist()" class="btn-primary w-full py-2 rounded-lg">添加</button>
-        </div>
-      \`);
-      loadGroupsForSelect();
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加白名单</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">用户 ID</label>' +
+            '<input type="text" id="wlUserId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">适用群组（留空为全局）</label>' +
+            '<select id="wlGroupId" class="w-full px-4 py-2 rounded-lg">' +
+              '<option value="">全局</option>' +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">备注</label>' +
+            '<input type="text" id="wlNote" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<button onclick="addWhitelist()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
+      loadGroupsForSelect('wlGroupId');
     }
 
     function showBatchImportModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">批量导入白名单</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">用户ID列表（每行一个）</label>
-            <textarea id="batchUserIds" rows="8" class="w-full px-4 py-2 rounded-lg" placeholder="123456789\n987654321"></textarea>
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">适用群组</label>
-            <select id="batchGroupId" class="w-full px-4 py-2 rounded-lg">
-              <option value="">全局</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">统一备注</label>
-            <input type="text" id="batchNote" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <button onclick="batchImportWhitelist()" class="btn-primary w-full py-2 rounded-lg">导入</button>
-        </div>
-      \`);
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">批量导入白名单</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">用户ID列表（每行一个）</label>' +
+            '<textarea id="batchUserIds" rows="8" class="w-full px-4 py-2 rounded-lg" placeholder="123456789&#10;987654321"></textarea>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">适用群组</label>' +
+            '<select id="batchGroupId" class="w-full px-4 py-2 rounded-lg">' +
+              '<option value="">全局</option>' +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">统一备注</label>' +
+            '<input type="text" id="batchNote" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<button onclick="batchImportWhitelist()" class="btn-primary w-full py-2 rounded-lg">导入</button>' +
+        '</div>'
+      );
       loadGroupsForSelect('batchGroupId');
     }
 
-    async function loadGroupsForSelect(selectId = 'wlGroupId') {
-      const groups = await api('/groups');
+    async function loadGroupsForSelect(selectId) {
+      const groups = dataCache.groups || await api('/groups');
       const select = document.getElementById(selectId);
-      groups.forEach(g => {
+      if (!select) return;
+      groups.forEach(function(g) {
         const option = document.createElement('option');
         option.value = g.id;
         option.textContent = g.title;
@@ -1648,10 +1957,10 @@ function getHTML() {
       
       if (!userId) return showToast('请输入用户ID', 'error');
       
-      await api('/whitelist', { method: 'POST', body: JSON.stringify({ userId, groupId, note }) });
+      await api('/whitelist', { method: 'POST', body: JSON.stringify({ userId: userId, groupId: groupId, note: note }) });
       showToast('添加成功');
       closeModal();
-      loadWhitelist();
+      await loadWhitelist();
     }
 
     async function batchImportWhitelist() {
@@ -1661,17 +1970,18 @@ function getHTML() {
       
       if (!userIds) return showToast('请输入用户ID', 'error');
       
-      await api('/whitelist', { method: 'POST', body: JSON.stringify({ userIds, groupId, note }) });
+      showToast('正在导入...');
+      await api('/whitelist', { method: 'POST', body: JSON.stringify({ userIds: userIds, groupId: groupId, note: note }) });
       showToast('导入成功');
       closeModal();
-      loadWhitelist();
+      await loadWhitelist();
     }
 
     async function deleteWhitelist(id) {
       if (!confirm('确定要删除吗？')) return;
       await api('/whitelist/' + id, { method: 'DELETE' });
       showToast('已删除');
-      loadWhitelist();
+      await loadWhitelist();
     }
 
     // ==================== 管理员管理 ====================
@@ -1679,70 +1989,85 @@ function getHTML() {
       const data = await api('/admins');
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-lg font-bold">管理员管理</h2>
-          <button onclick="showAddAdminModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加管理员</button>
-        </div>
-        
-        <div class="card p-4 mb-4">
-          <h3 class="font-bold mb-3">👑 超级管理员</h3>
-          <div class="space-y-2">
-            \${data.superAdmins.length === 0 ? '<div class="text-gray-400">未配置</div>' :
-              data.superAdmins.map(id => \`
-                <div class="glass p-3 rounded-lg flex items-center justify-between">
-                  <div class="flex items-center gap-3">
-                    <div class="avatar">S</div>
-                    <div>
-                      <div class="font-medium">超级管理员</div>
-                      <div class="text-xs text-gray-400">ID: \${id}</div>
-                    </div>
-                  </div>
-                  <span class="text-xs text-yellow-400">环境变量配置</span>
-                </div>
-              \`).join('')}
-          </div>
-        </div>
-        
-        <div class="card p-4">
-          <h3 class="font-bold mb-3">👤 普通管理员</h3>
-          <div class="space-y-2">
-            \${data.admins.length === 0 ? '<div class="text-gray-400">暂无管理员</div>' :
-              data.admins.map(a => \`
-                <div class="glass p-3 rounded-lg flex items-center justify-between">
-                  <div class="flex items-center gap-3">
-                    <div class="avatar">\${a.first_name?.[0] || 'A'}</div>
-                    <div>
-                      <div class="font-medium">\${a.first_name || ''} \${a.last_name || ''}</div>
-                      <div class="text-xs text-gray-400">ID: \${a.user_id}</div>
-                      <div class="text-xs text-gray-400">\${a.group_title ? '群组: ' + a.group_title : '全局管理员'}</div>
-                    </div>
-                  </div>
-                  <button onclick="deleteAdmin(\${a.id})" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>
-                </div>
-              \`).join('')}
-          </div>
-        </div>
-      \`;
+      let html = '<div class="flex justify-between items-center mb-4">' +
+        '<h2 class="text-lg font-bold">管理员管理</h2>' +
+        '<button onclick="showAddAdminModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加管理员</button>' +
+      '</div>' +
+      
+      '<div class="card p-4 mb-4">' +
+        '<h3 class="font-bold mb-3">👑 超级管理员</h3>' +
+        '<div class="space-y-2">';
+      
+      if (data.superAdmins.length === 0) {
+        html += '<div class="text-gray-400">未配置</div>';
+      } else {
+        data.superAdmins.forEach(function(admin) {
+          const name = ((admin.first_name || '') + ' ' + (admin.last_name || '')).trim() || '超级管理员';
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(admin.photo_base64, name) +
+              '<div>' +
+                '<div class="font-medium">' + escapeHtml(name) + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (admin.username ? '<span class="user-tag">@' + admin.username + '</span> ' : '') +
+                  'ID: ' + admin.user_id +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<span class="text-xs text-yellow-400">环境变量配置</span>' +
+          '</div>';
+        });
+      }
+      
+      html += '</div></div>' +
+      
+      '<div class="card p-4">' +
+        '<h3 class="font-bold mb-3">👤 普通管理员</h3>' +
+        '<div class="space-y-2">';
+      
+      if (data.admins.length === 0) {
+        html += '<div class="text-gray-400">暂无管理员</div>';
+      } else {
+        data.admins.forEach(function(a) {
+          const name = ((a.first_name || '') + ' ' + (a.last_name || '')).trim() || '管理员';
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(a.photo_base64, name) +
+              '<div>' +
+                '<div class="font-medium">' + escapeHtml(name) + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (a.username ? '<span class="user-tag">@' + a.username + '</span> ' : '') +
+                  'ID: ' + a.user_id +
+                '</div>' +
+                '<div class="text-xs text-gray-400">' + (a.group_title ? '群组: ' + escapeHtml(a.group_title) : '全局管理员') + '</div>' +
+              '</div>' +
+            '</div>' +
+            '<button onclick="deleteAdmin(' + a.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' +
+          '</div>';
+        });
+      }
+      
+      html += '</div></div>';
+      content.innerHTML = html;
     }
 
     function showAddAdminModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">添加管理员</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">用户 ID</label>
-            <input type="text" id="adminUserId" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">管理群组（留空为全局）</label>
-            <select id="adminGroupId" class="w-full px-4 py-2 rounded-lg">
-              <option value="">全局</option>
-            </select>
-          </div>
-          <button onclick="addAdmin()" class="btn-primary w-full py-2 rounded-lg">添加</button>
-        </div>
-      \`);
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加管理员</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">用户 ID</label>' +
+            '<input type="text" id="adminUserId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">管理群组（留空为全局）</label>' +
+            '<select id="adminGroupId" class="w-full px-4 py-2 rounded-lg">' +
+              '<option value="">全局</option>' +
+            '</select>' +
+          '</div>' +
+          '<button onclick="addAdmin()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
       loadGroupsForSelect('adminGroupId');
     }
 
@@ -1752,10 +2077,10 @@ function getHTML() {
       
       if (!userId) return showToast('请输入用户ID', 'error');
       
-      await api('/admins', { method: 'POST', body: JSON.stringify({ userId, groupId }) });
+      await api('/admins', { method: 'POST', body: JSON.stringify({ userId: userId, groupId: groupId }) });
       showToast('添加成功');
       closeModal();
-      loadAdmins();
+      await loadAdmins();
     }
 
     async function deleteAdmin(id) {
@@ -1765,167 +2090,227 @@ function getHTML() {
         showToast(result.error, 'error');
       } else {
         showToast('已删除');
-        loadAdmins();
+        await loadAdmins();
       }
     }
 
     // ==================== 通知设置 ====================
     async function loadNotifications() {
-      const notifications = await api('/notifications');
-      const admins = await api('/admins');
-      const groups = await api('/groups');
+      const data = await api('/notifications');
+      const groups = dataCache.groups || await api('/groups');
+      dataCache.groups = groups;
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="flex justify-between items-center mb-4">
-          <h2 class="text-lg font-bold">通知设置</h2>
-          <button onclick="showAddNotificationModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加</button>
-        </div>
-        <div class="space-y-3">
-          \${notifications.length === 0 ? '<div class="text-center py-10 text-gray-400">暂无通知设置</div>' :
-            notifications.map(n => \`
-              <div class="card p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <div class="font-medium">管理员 ID: \${n.admin_id}</div>
-                    <div class="text-xs text-gray-400">\${n.group_title ? '群组: ' + n.group_title : '全局通知'}</div>
-                  </div>
-                  <div class="flex items-center gap-3">
-                    <div class="switch \${n.enabled ? 'on' : ''}" onclick="toggleNotification(\${n.id}, \${!n.enabled})"></div>
-                    <button onclick="deleteNotification(\${n.id})" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>
-                  </div>
-                </div>
-              </div>
-            \`).join('')}
-        </div>
-      \`;
+      let html = '<div class="mb-4">' +
+        '<h2 class="text-lg font-bold">通知设置</h2>' +
+        '<p class="text-sm text-gray-400">管理封禁通知推送设置</p>' +
+      '</div>' +
+      
+      '<div class="card p-4 mb-4">' +
+        '<h3 class="font-bold mb-3">📢 全局通知（所有群组）</h3>' +
+        '<div class="space-y-2">';
+      
+      if (data.admins.length === 0) {
+        html += '<div class="text-gray-400">暂无管理员</div>';
+      } else {
+        data.admins.forEach(function(admin) {
+          const name = ((admin.first_name || '') + ' ' + (admin.last_name || '')).trim() || '管理员';
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(admin.photo_base64, name) +
+              '<div>' +
+                '<div class="font-medium">' + escapeHtml(name) + 
+                  (admin.is_super ? ' <span class="text-xs text-yellow-400">(超管)</span>' : '') +
+                '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (admin.username ? '<span class="user-tag">@' + admin.username + '</span> ' : '') +
+                  'ID: ' + admin.user_id +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="switch ' + (admin.enabled ? 'on' : '') + '" onclick="toggleAdminNotification(\\'' + admin.user_id + '\\', ' + (!admin.enabled) + ', ' + (admin.notification_id || 'null') + ')"></div>' +
+          '</div>';
+        });
+      }
+      
+      html += '</div></div>';
+      
+      // 群组特定通知
+      html += '<div class="card p-4">' +
+        '<h3 class="font-bold mb-3">🎯 群组专属通知</h3>' +
+        '<p class="text-xs text-gray-400 mb-3">为特定群组单独设置通知接收人</p>' +
+        '<button onclick="showAddGroupNotificationModal()" class="btn-primary px-4 py-2 rounded-lg text-sm mb-3">➕ 添加群组通知</button>' +
+        '<div class="space-y-2">';
+      
+      const groupNotifs = data.notifications.filter(function(n) { return n.group_id; });
+      if (groupNotifs.length === 0) {
+        html += '<div class="text-gray-400 text-sm">暂无群组专属通知设置</div>';
+      } else {
+        groupNotifs.forEach(function(n) {
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div>' +
+              '<div class="font-medium">管理员 ID: ' + n.admin_id + '</div>' +
+              '<div class="text-xs text-gray-400">群组: ' + escapeHtml(n.group_title || n.group_id) + '</div>' +
+            '</div>' +
+            '<div class="flex items-center gap-3">' +
+              '<div class="switch ' + (n.enabled ? 'on' : '') + '" onclick="toggleNotification(' + n.id + ', ' + (!n.enabled) + ')"></div>' +
+              '<button onclick="deleteNotification(' + n.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' +
+            '</div>' +
+          '</div>';
+        });
+      }
+      
+      html += '</div></div>';
+      content.innerHTML = html;
     }
 
-    function showAddNotificationModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">添加通知设置</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">管理员 ID</label>
-            <input type="text" id="notifAdminId" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">接收群组通知（留空为全部）</label>
-            <select id="notifGroupId" class="w-full px-4 py-2 rounded-lg">
-              <option value="">全部群组</option>
-            </select>
-          </div>
-          <button onclick="addNotification()" class="btn-primary w-full py-2 rounded-lg">添加</button>
-        </div>
-      \`);
-      loadGroupsForSelect('notifGroupId');
+    async function toggleAdminNotification(adminId, enabled, notifId) {
+      await api('/notifications', { 
+        method: 'POST', 
+        body: JSON.stringify({ adminId: adminId, groupId: null, enabled: enabled }) 
+      });
+      showToast(enabled ? '通知已开启' : '通知已关闭');
+      await loadNotifications();
     }
 
-    async function addNotification() {
+    function showAddGroupNotificationModal() {
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加群组专属通知</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">管理员 ID</label>' +
+            '<input type="text" id="notifAdminId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">群组</label>' +
+            '<select id="notifGroupId" class="w-full px-4 py-2 rounded-lg">' +
+            '</select>' +
+          '</div>' +
+          '<button onclick="addGroupNotification()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
+      
+      const groups = dataCache.groups || [];
+      const select = document.getElementById('notifGroupId');
+      groups.forEach(function(g) {
+        const option = document.createElement('option');
+        option.value = g.id;
+        option.textContent = g.title;
+        select.appendChild(option);
+      });
+    }
+
+    async function addGroupNotification() {
       const adminId = document.getElementById('notifAdminId').value.trim();
       const groupId = document.getElementById('notifGroupId').value;
       
       if (!adminId) return showToast('请输入管理员ID', 'error');
+      if (!groupId) return showToast('请选择群组', 'error');
       
-      await api('/notifications', { method: 'POST', body: JSON.stringify({ adminId, groupId, enabled: true }) });
+      await api('/notifications', { method: 'POST', body: JSON.stringify({ adminId: adminId, groupId: groupId, enabled: true }) });
       showToast('添加成功');
       closeModal();
-      loadNotifications();
+      await loadNotifications();
     }
 
     async function toggleNotification(id, enabled) {
-      await api('/notifications/' + id, { method: 'PUT', body: JSON.stringify({ enabled }) });
+      await api('/notifications/' + id, { method: 'PUT', body: JSON.stringify({ enabled: enabled }) });
       showToast(enabled ? '通知已开启' : '通知已关闭');
-      loadNotifications();
+      await loadNotifications();
     }
 
     async function deleteNotification(id) {
       if (!confirm('确定要删除吗？')) return;
       await api('/notifications/' + id, { method: 'DELETE' });
       showToast('已删除');
-      loadNotifications();
+      await loadNotifications();
     }
 
     // ==================== 违禁词管理 ====================
     async function loadBanwords() {
       const banwords = await api('/banwords');
+      dataCache.banwords = banwords;
       const content = document.getElementById('content');
       
-      content.innerHTML = \`
-        <div class="flex flex-col md:flex-row gap-4 mb-4">
-          <button onclick="showAddBanwordModal()" class="btn-primary px-4 py-2 rounded-lg">➕ 添加违禁词</button>
-          <button onclick="showBatchBanwordModal()" class="btn-success px-4 py-2 rounded-lg">📥 批量导入</button>
-          <button onclick="exportBanwords()" class="glass px-4 py-2 rounded-lg hover:bg-white/10">📤 导出</button>
-        </div>
-        <div class="card p-4">
-          <div class="flex flex-wrap gap-2">
-            \${banwords.length === 0 ? '<div class="text-gray-400">暂无违禁词</div>' :
-              banwords.map(w => \`
-                <span class="glass px-3 py-1 rounded-full text-sm flex items-center gap-2">
-                  \${w.word}
-                  <button onclick="deleteBanword(\${w.id})" class="text-red-400 hover:text-red-300">×</button>
-                </span>
-              \`).join('')}
-          </div>
-        </div>
-      \`;
+      let html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
+        '<button onclick="showAddBanwordModal()" class="btn-primary px-4 py-2 rounded-lg">➕ 添加违禁词</button>' +
+        '<button onclick="showBatchBanwordModal()" class="btn-success px-4 py-2 rounded-lg">📥 批量导入</button>' +
+        '<button onclick="exportBanwords()" class="glass px-4 py-2 rounded-lg hover:bg-white/10">📤 导出</button>' +
+      '</div>' +
+      '<div class="card p-4">' +
+        '<div class="mb-2 text-sm text-gray-400">共 ' + banwords.length + ' 个违禁词</div>' +
+        '<div class="flex flex-wrap gap-2">';
+      
+      if (banwords.length === 0) {
+        html += '<div class="text-gray-400">暂无违禁词</div>';
+      } else {
+        banwords.forEach(function(w) {
+          html += '<span class="glass px-3 py-1 rounded-full text-sm flex items-center gap-2">' +
+            escapeHtml(w.word) +
+            '<button onclick="deleteBanword(' + w.id + ')" class="text-red-400 hover:text-red-300">×</button>' +
+          '</span>';
+        });
+      }
+      
+      html += '</div></div>';
+      content.innerHTML = html;
     }
 
     function showAddBanwordModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">添加违禁词</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">违禁词</label>
-            <input type="text" id="newBanword" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <button onclick="addBanword()" class="btn-primary w-full py-2 rounded-lg">添加</button>
-        </div>
-      \`);
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加违禁词</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">违禁词</label>' +
+            '<input type="text" id="newBanword" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<button onclick="addBanword()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
     }
 
     function showBatchBanwordModal() {
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">批量导入违禁词</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">违禁词列表（每行一个）</label>
-            <textarea id="batchBanwords" rows="8" class="w-full px-4 py-2 rounded-lg"></textarea>
-          </div>
-          <button onclick="batchAddBanwords()" class="btn-primary w-full py-2 rounded-lg">导入</button>
-        </div>
-      \`);
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">批量导入违禁词</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">违禁词列表（每行一个）</label>' +
+            '<textarea id="batchBanwords" rows="8" class="w-full px-4 py-2 rounded-lg"></textarea>' +
+          '</div>' +
+          '<button onclick="batchAddBanwords()" class="btn-primary w-full py-2 rounded-lg">导入</button>' +
+        '</div>'
+      );
     }
 
     async function addBanword() {
       const word = document.getElementById('newBanword').value.trim();
       if (!word) return showToast('请输入违禁词', 'error');
       
-      await api('/banwords', { method: 'POST', body: JSON.stringify({ word }) });
+      await api('/banwords', { method: 'POST', body: JSON.stringify({ word: word }) });
       showToast('添加成功');
       closeModal();
-      loadBanwords();
+      await loadBanwords();
     }
 
     async function batchAddBanwords() {
       const words = document.getElementById('batchBanwords').value.trim();
       if (!words) return showToast('请输入违禁词', 'error');
       
-      await api('/banwords', { method: 'POST', body: JSON.stringify({ words }) });
+      await api('/banwords', { method: 'POST', body: JSON.stringify({ words: words }) });
       showToast('导入成功');
       closeModal();
-      loadBanwords();
+      await loadBanwords();
     }
 
     async function deleteBanword(id) {
       await api('/banwords/' + id, { method: 'DELETE' });
       showToast('已删除');
-      loadBanwords();
+      await loadBanwords();
     }
 
     async function exportBanwords() {
-      const banwords = await api('/banwords');
-      const text = banwords.map(w => w.word).join('\\n');
+      const banwords = dataCache.banwords || await api('/banwords');
+      const text = banwords.map(function(w) { return w.word; }).join('\\n');
       await navigator.clipboard.writeText(text);
       showToast('已复制到剪贴板');
     }
@@ -1937,19 +2322,15 @@ function getHTML() {
       
       const types = ['all', 'join', 'ban', 'whitelist', 'admin', 'notification', 'system', 'error'];
       
-      content.innerHTML = \`
-        <div class="flex gap-2 overflow-x-auto pb-2 mb-4">
-          \${types.map(t => \`
-            <button class="log-type-btn px-3 py-1 rounded-full text-sm whitespace-nowrap glass \${t === 'all' ? 'tab-active' : ''}" 
-                    data-type="\${t}" onclick="filterLogs('\${t}')">
-              \${t === 'all' ? '全部' : t}
-            </button>
-          \`).join('')}
-        </div>
-        <div id="logsList" class="space-y-2 max-h-[60vh] overflow-y-auto">
-          \${renderLogs(logs)}
-        </div>
-      \`;
+      let html = '<div class="flex gap-2 overflow-x-auto pb-2 mb-4">';
+      types.forEach(function(t) {
+        html += '<button class="log-type-btn px-3 py-1 rounded-full text-sm whitespace-nowrap glass ' + 
+          (t === 'all' ? 'tab-active' : '') + '" data-type="' + t + '" onclick="filterLogs(\\'' + t + '\\')">' +
+          (t === 'all' ? '全部' : t) + '</button>';
+      });
+      html += '</div><div id="logsList" class="space-y-2 max-h-[60vh] overflow-y-auto">' + renderLogs(logs) + '</div>';
+      
+      content.innerHTML = html;
     }
 
     function renderLogs(logs) {
@@ -1962,57 +2343,62 @@ function getHTML() {
         admin: 'text-yellow-400',
         notification: 'text-purple-400',
         system: 'text-gray-400',
-        error: 'text-red-500'
+        error: 'text-red-500',
+        auth: 'text-cyan-400',
+        group: 'text-orange-400',
+        banword: 'text-pink-400'
       };
       
-      return logs.map(l => \`
-        <div class="glass p-3 rounded-lg text-sm">
-          <div class="flex justify-between items-start mb-1">
-            <span class="font-medium \${typeColors[l.type] || 'text-gray-400'}">[\${l.type}] \${l.action}</span>
-            <span class="text-xs text-gray-500">\${l.created_at}</span>
-          </div>
-          <div class="text-gray-400 text-xs">\${l.details || ''}</div>
-        </div>
-      \`).join('');
+      let html = '';
+      logs.forEach(function(l) {
+        html += '<div class="glass p-3 rounded-lg text-sm">' +
+          '<div class="flex justify-between items-start mb-1">' +
+            '<span class="font-medium ' + (typeColors[l.type] || 'text-gray-400') + '">[' + l.type + '] ' + escapeHtml(l.action) + '</span>' +
+            '<span class="text-xs text-gray-500">' + (l.created_at || '') + '</span>' +
+          '</div>' +
+          '<div class="text-gray-400 text-xs">' + escapeHtml(l.details || '') + '</div>' +
+        '</div>';
+      });
+      return html;
     }
 
     async function filterLogs(type) {
-      document.querySelectorAll('.log-type-btn').forEach(btn => {
+      document.querySelectorAll('.log-type-btn').forEach(function(btn) {
         btn.classList.remove('tab-active');
         if (btn.dataset.type === type) btn.classList.add('tab-active');
       });
       
-      const logs = await api(\`/logs?type=\${type}\`);
+      const logs = await api('/logs?type=' + type);
       document.getElementById('logsList').innerHTML = renderLogs(logs);
     }
 
     // ==================== Webhook 设置 ====================
     function showSetWebhookModal() {
       const currentUrl = window.location.origin + '/webhook';
-      showModal(\`
-        <h3 class="text-lg font-bold mb-4">设置 Webhook</h3>
-        <div class="space-y-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1">Webhook URL</label>
-            <input type="text" id="webhookUrl" value="\${currentUrl}" class="w-full px-4 py-2 rounded-lg">
-          </div>
-          <div class="text-xs text-gray-400">
-            建议使用当前域名的 /webhook 路径
-          </div>
-          <button onclick="setWebhook()" class="btn-primary w-full py-2 rounded-lg">设置</button>
-        </div>
-      \`);
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">设置 Webhook</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">Webhook URL</label>' +
+            '<input type="text" id="webhookUrl" value="' + currentUrl + '" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div class="text-xs text-gray-400">' +
+            '建议使用当前域名的 /webhook 路径' +
+          '</div>' +
+          '<button onclick="setWebhook()" class="btn-primary w-full py-2 rounded-lg">设置</button>' +
+        '</div>'
+      );
     }
 
     async function setWebhook() {
       const url = document.getElementById('webhookUrl').value.trim();
       if (!url) return showToast('请输入 URL', 'error');
       
-      const result = await api('/webhook', { method: 'POST', body: JSON.stringify({ url }) });
+      const result = await api('/webhook', { method: 'POST', body: JSON.stringify({ url: url }) });
       if (result.ok) {
         showToast('Webhook 设置成功');
         closeModal();
-        loadDashboard();
+        await loadDashboard();
       } else {
         showToast('设置失败: ' + (result.description || '未知错误'), 'error');
       }
@@ -2029,28 +2415,13 @@ function getHTML() {
     }
 
     // ==================== Toast 提示 ====================
-    function showToast(message, type = 'success') {
+    function showToast(message, type) {
+      type = type || 'success';
       const toast = document.createElement('div');
-      toast.className = \`toast \${type === 'error' ? 'bg-red-500' : 'bg-green-500'}\`;
+      toast.className = 'toast ' + (type === 'error' ? 'bg-red-500' : 'bg-green-500');
       toast.textContent = message;
       document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 3000);
-    }
-
-    // ==================== 数据刷新 ====================
-    function refreshData() {
-      cache = {};
-      loadTabContent();
-      showToast('数据已刷新');
-    }
-
-    function startAutoRefresh() {
-      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-      autoRefreshTimer = setInterval(() => {
-        if (document.visibilityState === 'visible') {
-          loadTabContent();
-        }
-      }, 30000); // 30秒自动刷新
+      setTimeout(function() { toast.remove(); }, 3000);
     }
 
     // ==================== 初始化 ====================
@@ -2068,7 +2439,6 @@ export default {
     
     // Webhook 处理
     if (path === '/webhook') {
-      // 验证 Webhook 密钥
       if (env.WEBHOOK_SECRET) {
         const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
         if (secret !== env.WEBHOOK_SECRET) {
