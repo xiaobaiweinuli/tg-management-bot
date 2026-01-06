@@ -315,10 +315,9 @@ async function ensureDatabase(db) {
         dbInitialized = true;
         return;
     }
-} catch (e) {
+  } catch (e) {
     // 表不存在或查询异常，执行初始化
-}
-
+  }
   
   await initDatabase(db);
   dbInitialized = true;
@@ -1520,6 +1519,7 @@ async function handleAPI(request, env, path) {
       }
     }
     
+    // 修复：添加通知更新接口（用于开关操作）
     if (path.startsWith('/api/notifications/') && request.method === 'PUT') {
       // 需要 manage_notifications 权限
       if (!user.is_super && !hasPermission(user, CONFIG.PERMISSIONS.MANAGE_NOTIFICATIONS, env)) {
@@ -1541,6 +1541,7 @@ async function handleAPI(request, env, path) {
       }
       
       await db.prepare('UPDATE notifications SET enabled = ? WHERE id = ?').bind(data.enabled ? 1 : 0, notifId).run();
+      await addLog(db, 'notification', 'update', `更新通知设置状态`, user.user_id);
       return jsonResponse({ success: true });
     }
     
@@ -1564,6 +1565,7 @@ async function handleAPI(request, env, path) {
       }
       
       await db.prepare('DELETE FROM notifications WHERE id = ?').bind(notifId).run();
+      await addLog(db, 'notification', 'delete', `删除通知设置`, user.user_id);
       return jsonResponse({ success: true });
     }
     
@@ -3513,7 +3515,8 @@ function getHTML() {
         '<h3 class="font-bold mb-3">🎯 群组专属通知</h3>' +
         '<p class="text-xs text-gray-400 mb-3">为特定群组单独设置通知接收人</p>';
       
-      if (currentUser.is_super) {
+      // 修复：检查是否有 manage_notifications 权限（不仅是超级管理员）
+      if (currentUser.is_super || checkPermission('manage_notifications')) {
         html += '<button onclick="showAddGroupNotificationModal()" class="btn-primary px-4 py-2 rounded-lg text-sm mb-3">➕ 添加群组通知</button>';
       }
       
@@ -3555,27 +3558,46 @@ function getHTML() {
       content.innerHTML = html;
     }
 
+    // 修复：showAddGroupNotificationModal 函数，支持普通管理员
     function showAddGroupNotificationModal() {
-      if (!currentUser.is_super) {
+      // 检查权限
+      if (!currentUser.is_super && !checkPermission('manage_notifications')) {
         showToast('权限不足', 'error');
         return;
       }
       
-      showModal(
-        '<h3 class="text-lg font-bold mb-4">添加群组专属通知</h3>' +
-        '<div class="space-y-4">' +
+      var modalContent = '<h3 class="text-lg font-bold mb-4">添加群组专属通知</h3>' +
+        '<div class="space-y-4">';
+      
+      // 如果是超级管理员，可以指定任意管理员
+      if (currentUser.is_super) {
+        modalContent += 
           '<div>' +
             '<label class="block text-sm text-gray-400 mb-1">管理员 ID</label>' +
             '<input type="text" id="notifAdminId" class="w-full px-4 py-2 rounded-lg">' +
-          '</div>' +
+          '</div>';
+      } else {
+        // 普通管理员只能添加自己的通知，显示当前用户信息
+        modalContent += 
           '<div>' +
-            '<label class="block text-sm text-gray-400 mb-1">群组</label>' +
-            '<select id="notifGroupId" class="w-full px-4 py-2 rounded-lg">' +
-            '</select>' +
-          '</div>' +
-          '<button onclick="addGroupNotification()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
-        '</div>'
-      );
+            '<label class="block text-sm text-gray-400 mb-1">管理员</label>' +
+            '<div class="glass p-3 rounded-lg">' +
+              renderUserInfo(currentUser, false) +
+            '</div>' +
+            '<input type="hidden" id="notifAdminId" value="' + getCurrentUserId() + '">' +
+          '</div>';
+      }
+      
+      modalContent += 
+        '<div>' +
+          '<label class="block text-sm text-gray-400 mb-1">群组</label>' +
+          '<select id="notifGroupId" class="w-full px-4 py-2 rounded-lg">' +
+          '</select>' +
+        '</div>' +
+        '<button onclick="addGroupNotification()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+      '</div>';
+      
+      showModal(modalContent);
       
       var groups = dataCache.get('groups') || [];
       var select = document.getElementById('notifGroupId');
@@ -3588,6 +3610,8 @@ function getHTML() {
       }
     }
 
+    // 修复开关问题
+    // 修改 toggleAdminNotification 函数，使用更新接口而不是每次都创建新记录
     async function toggleAdminNotification(adminId, enabled, notifId) {
       // 如果是普通管理员，检查是否是自己的通知
       if (!currentUser.is_super && adminId !== getCurrentUserId()) {
@@ -3595,10 +3619,22 @@ function getHTML() {
         return;
       }
       
-      var result = await api('/notifications', { 
-        method: 'POST', 
-        body: JSON.stringify({ adminId: adminId, groupId: null, enabled: enabled }) 
-      });
+      // 修复：如果有 notification_id，使用更新接口；否则使用创建接口
+      var result;
+      if (notifId) {
+        // 使用更新接口
+        result = await api('/notifications/' + notifId, {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: enabled })
+        });
+      } else {
+        // 使用创建接口
+        result = await api('/notifications', {
+          method: 'POST',
+          body: JSON.stringify({ adminId: adminId, groupId: null, enabled: enabled })
+        });
+      }
+      
       if (result && result.error) {
         showToast(result.error, 'error');
       } else {
@@ -3646,8 +3682,10 @@ function getHTML() {
       }
     }
 
+    // 修复：addGroupNotification 函数，支持权限检查
     async function addGroupNotification() {
-      if (!currentUser.is_super) {
+      // 检查权限
+      if (!currentUser.is_super && !checkPermission('manage_notifications')) {
         showToast('权限不足', 'error');
         return;
       }
@@ -3658,7 +3696,21 @@ function getHTML() {
       if (!adminId) return showToast('请输入管理员ID', 'error');
       if (!groupId) return showToast('请选择群组', 'error');
       
-      var result = await api('/notifications', { method: 'POST', body: JSON.stringify({ adminId: adminId, groupId: groupId, enabled: true }) });
+      // 普通管理员只能添加自己的通知
+      if (!currentUser.is_super && adminId !== getCurrentUserId()) {
+        showToast('只能添加自己的通知设置', 'error');
+        return;
+      }
+      
+      var result = await api('/notifications', { 
+        method: 'POST', 
+        body: JSON.stringify({ 
+          adminId: adminId, 
+          groupId: groupId, 
+          enabled: true 
+        }) 
+      });
+      
       if (result && result.error) {
         showToast(result.error, 'error');
       } else {
