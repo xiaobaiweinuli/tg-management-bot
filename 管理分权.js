@@ -1463,53 +1463,14 @@ async function handleAPI(request, env, path) {
           return jsonResponse({ error: '权限不足' }, 403);
         }
         
-        // 如果是普通管理员，返回当前用户自己的数据，但格式与超级管理员相同
-        if (!user.is_super) {
-          // 获取当前用户信息
-          const currentUserInfo = await getUserInfoWithPhoto(telegram, db, user.user_id);
-          
-          // 获取当前用户的通知设置
-          const notifications = await db.prepare(
-            'SELECT n.*, g.title as group_title FROM notifications n LEFT JOIN groups g ON n.group_id = g.id WHERE n.admin_id = ? ORDER BY n.created_at DESC'
-          ).bind(user.user_id).all();
-          
-          // 构建与超级管理员相同的返回格式
-          const adminInfos = [{
-            ...currentUserInfo,
-            user_id: user.user_id,
-            notification_id: null,
-            enabled: 0,
-            is_super: false
-          }];
-          
-          // 查找全局通知设置
-          const globalNotification = notifications.results.find(n => !n.group_id);
-          if (globalNotification) {
-            adminInfos[0].notification_id = globalNotification.id;
-            adminInfos[0].enabled = globalNotification.enabled;
-          }
-          
-          return jsonResponse({ 
-            admins: adminInfos,
-            notifications: notifications.results,
-            currentAdmin: {
-              id: user.user_id,
-              is_super: false,
-              permissions: user.permissions
-            }
-          });
-        }
-        
-        // 超级管理员可以看到所有
-        const admins = await db.prepare('SELECT * FROM admins ORDER BY created_at DESC').all();
-        const superAdminIds = getSuperAdmins(env);
-        
         // 获取现有通知设置
         const notifications = await db.prepare(
           'SELECT n.*, g.title as group_title FROM notifications n LEFT JOIN groups g ON n.group_id = g.id ORDER BY n.created_at DESC'
         ).all();
         
-        // 合并所有管理员ID
+        // 获取所有管理员ID（包括超级管理员和普通管理员）
+        const admins = await db.prepare('SELECT * FROM admins ORDER BY created_at DESC').all();
+        const superAdminIds = getSuperAdmins(env);
         const allAdminIds = new Set([
           ...superAdminIds,
           ...admins.results.map(a => a.user_id)
@@ -1530,7 +1491,12 @@ async function handleAPI(request, env, path) {
         
         return jsonResponse({ 
           admins: adminInfos,
-          notifications: notifications.results 
+          notifications: notifications.results,
+          currentAdmin: {
+            id: user.user_id,
+            is_super: user.is_super,
+            permissions: user.permissions
+          }
         });
       }
       if (request.method === 'POST') {
@@ -1543,25 +1509,25 @@ async function handleAPI(request, env, path) {
         
         // 普通管理员只能管理自己的通知设置
         if (!user.is_super && data.adminId !== user.user_id) {
-          return jsonResponse({ error: '只能管理自己的通知设置', userId: user.user_id }, 403);
+          return jsonResponse({ error: '只能管理自己的通知设置' }, 403);
         }
         
         await db.prepare(
           'INSERT OR REPLACE INTO notifications (admin_id, group_id, enabled, created_at) VALUES (?, ?, ?, ?)'
         ).bind(data.adminId, data.groupId || null, data.enabled ? 1 : 0, formatBeijingTime()).run();
-        await addLog(db, 'notification', 'update', `更新通知设置: admin=${data.adminId}, group=${data.groupId || 'all'}, enabled=${data.enabled}`, user.user_id);
+        await addLog(db, 'notification', 'update', `更新通知设置`, user.user_id);
         return jsonResponse({ success: true });
       }
     }
     
     if (path.startsWith('/api/notifications/') && request.method === 'PUT') {
-      const notifId = path.split('/')[3];
-      const data = await request.json();
-      
       // 需要 manage_notifications 权限
       if (!user.is_super && !hasPermission(user, CONFIG.PERMISSIONS.MANAGE_NOTIFICATIONS, env)) {
         return jsonResponse({ error: '权限不足' }, 403);
       }
+      
+      const notifId = path.split('/')[3];
+      const data = await request.json();
       
       // 检查通知设置是否存在
       const notification = await db.prepare('SELECT * FROM notifications WHERE id = ?').bind(notifId).first();
@@ -1571,21 +1537,20 @@ async function handleAPI(request, env, path) {
       
       // 如果是普通管理员，检查是否是自己的设置
       if (!user.is_super && notification.admin_id !== user.user_id) {
-        return jsonResponse({ error: '只能管理自己的通知设置', userId: user.user_id }, 403);
+        return jsonResponse({ error: '只能管理自己的通知设置' }, 403);
       }
       
       await db.prepare('UPDATE notifications SET enabled = ? WHERE id = ?').bind(data.enabled ? 1 : 0, notifId).run();
-      await addLog(db, 'notification', 'toggle', `切换通知状态: id=${notifId}, enabled=${data.enabled}`, user.user_id);
       return jsonResponse({ success: true });
     }
     
     if (path.startsWith('/api/notifications/') && request.method === 'DELETE') {
-      const notifId = path.split('/')[3];
-      
       // 需要 manage_notifications 权限
       if (!user.is_super && !hasPermission(user, CONFIG.PERMISSIONS.MANAGE_NOTIFICATIONS, env)) {
         return jsonResponse({ error: '权限不足' }, 403);
       }
+      
+      const notifId = path.split('/')[3];
       
       // 检查通知设置是否存在
       const notification = await db.prepare('SELECT * FROM notifications WHERE id = ?').bind(notifId).first();
@@ -1595,11 +1560,10 @@ async function handleAPI(request, env, path) {
       
       // 如果是普通管理员，检查是否是自己的设置
       if (!user.is_super && notification.admin_id !== user.user_id) {
-        return jsonResponse({ error: '只能管理自己的通知设置', userId: user.user_id }, 403);
+        return jsonResponse({ error: '只能管理自己的通知设置' }, 403);
       }
       
       await db.prepare('DELETE FROM notifications WHERE id = ?').bind(notifId).run();
-      await addLog(db, 'notification', 'delete', `删除通知设置: id=${notifId}`, user.user_id);
       return jsonResponse({ success: true });
     }
     
@@ -1971,6 +1935,17 @@ function getHTML() {
       margin-bottom: 8px;
       color: #a78bfa;
     }
+    .admin-only {
+      opacity: 0.7;
+      position: relative;
+    }
+    .admin-only::after {
+      content: '👑';
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      font-size: 10px;
+    }
   </style>
 </head>
 <body class="text-white">
@@ -2040,6 +2015,13 @@ function getHTML() {
     let currentTab = 'dashboard';
     let tg = null;
     let permissionConfig = null;
+    
+    // ==================== 用户ID辅助函数 ====================
+    function getCurrentUserId() {
+        if (!currentUser) return null;
+        // 优先使用 user_id，如果不存在则使用 id
+        return currentUser.user_id || currentUser.id;
+    }
     
     // ==================== 权限检查 ====================
     function checkPermission(permission) {
@@ -2290,7 +2272,12 @@ function getHTML() {
         if (auth.token) {
           token = auth.token;
           currentUser = {
-            ...auth.user,
+            // 确保所有用户字段都被正确设置
+            id: auth.user.id,
+            user_id: auth.user.id.toString(), // 统一使用字符串格式
+            username: auth.user.username,
+            first_name: auth.user.first_name,
+            last_name: auth.user.last_name,
             is_super: auth.is_super,
             permissions: auth.permissions
           };
@@ -2308,15 +2295,29 @@ function getHTML() {
       showPage('mainPage');
       
       if (currentUser) {
-        var name = currentUser.first_name || '';
-        if (currentUser.last_name) name += ' ' + currentUser.last_name;
-        document.getElementById('currentUser').textContent = name ? '欢迎, ' + name : '群组管理系统';
+        // 统一获取用户名
+        var firstName = currentUser.first_name || '';
+        var lastName = currentUser.last_name || '';
+        var username = currentUser.username || '';
+        var displayName = '';
+        
+        if (firstName || lastName) {
+          displayName = (firstName + ' ' + lastName).trim();
+        } else if (username) {
+          displayName = username;
+        } else {
+          displayName = '管理员';
+        }
+        
+        document.getElementById('currentUser').textContent = displayName ? '欢迎, ' + displayName : '群组管理系统';
         
         // 显示用户角色
         var roleText = currentUser.is_super ? '👑 超级管理员' : '👤 普通管理员';
         document.getElementById('userRole').textContent = roleText;
         if (currentUser.is_super) {
           document.getElementById('userRole').className = 'text-xs px-2 py-1 rounded bg-yellow-500/20';
+        } else {
+          document.getElementById('userRole').className = 'text-xs px-2 py-1 rounded bg-blue-500/20';
         }
       }
       
@@ -3314,7 +3315,7 @@ function getHTML() {
           var isChecked = selectedPermissions.includes(permission);
           var description = descriptions[permission] || permission;
           
-          html += '<div class="permission-checkbox ' + (isSuperOnly ? 'opacity-60' : '') + '">' +
+          html += '<div class="permission-checkbox ' + (isSuperOnly ? 'admin-only' : '') + '">' +
                     '<div class="checkbox ' + (isChecked ? 'checked' : '') + '" onclick="toggleCheckbox(this)" data-permission="' + permission + '"></div>' +
                     '<div class="flex-1">' +
                       '<div class="text-sm">' + escapeHtml(description) + '</div>' +
@@ -3472,10 +3473,9 @@ function getHTML() {
       var html = '<div class="mb-4">' +
         '<h2 class="text-lg font-bold">通知设置</h2>' +
         '<p class="text-sm text-gray-400">管理封禁通知推送设置</p>' +
-      '</div>';
+      '</div>' +
       
-      // 超级管理员和普通管理员使用相同的页面结构
-      html += '<div class="card p-4 mb-4">' +
+      '<div class="card p-4 mb-4">' +
         '<h3 class="font-bold mb-3">📢 全局通知（所有群组）</h3>' +
         '<div class="space-y-2">';
       
@@ -3483,29 +3483,24 @@ function getHTML() {
         for (var i = 0; i < data.admins.length; i++) {
           var admin = data.admins[i];
           var name = ((admin.first_name || '') + ' ' + (admin.last_name || '')).trim() || '管理员';
+          var canToggle = currentUser.is_super || admin.user_id === getCurrentUserId();
+          
           html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
             '<div class="flex items-center gap-3">' +
               renderAvatar(admin.photo_base64, name) +
               '<div>' +
                 '<div class="font-medium">' + escapeHtml(name) + 
                   (admin.is_super ? ' <span class="text-xs text-yellow-400">(超管)</span>' : '') +
+                  (admin.user_id === getCurrentUserId() ? ' <span class="text-xs text-blue-400">(我)</span>' : '') +
                 '</div>' +
                 '<div class="text-xs text-gray-400">' +
                   (admin.username ? '<span class="user-tag">@' + admin.username + '</span> ' : '') +
                   'ID: ' + admin.user_id +
                 '</div>' +
               '</div>' +
-            '</div>';
-          
-          // 只有超级管理员可以切换其他管理员的全局通知
-          // 普通管理员只能切换自己的
-          if (currentUser.is_super || (!admin.is_super && admin.user_id === currentUser.id)) {
-            html += '<div class="switch ' + (admin.enabled ? 'on' : '') + '" onclick="toggleGlobalNotification(\\'' + admin.user_id + '\\', ' + (!admin.enabled) + ', ' + (admin.notification_id || 'null') + ')"></div>';
-          } else {
-            html += '<span class="text-xs text-gray-400">' + (admin.enabled ? '已开启' : '已关闭') + '</span>';
-          }
-          
-          html += '</div>';
+            '</div>' +
+            '<div class="switch ' + (admin.enabled ? 'on' : '') + (canToggle ? '' : ' opacity-50 cursor-not-allowed') + '" onclick="' + (canToggle ? 'toggleAdminNotification(\\'' + admin.user_id + '\\', ' + (!admin.enabled) + ', ' + (admin.notification_id || 'null') + ')' : '') + '"></div>' +
+          '</div>';
         }
       } else {
         html += '<div class="text-gray-400">暂无管理员</div>';
@@ -3518,8 +3513,7 @@ function getHTML() {
         '<h3 class="font-bold mb-3">🎯 群组专属通知</h3>' +
         '<p class="text-xs text-gray-400 mb-3">为特定群组单独设置通知接收人</p>';
       
-      // 普通管理员也可以添加自己的群组通知
-      if (checkPermission('manage_notifications')) {
+      if (currentUser.is_super) {
         html += '<button onclick="showAddGroupNotificationModal()" class="btn-primary px-4 py-2 rounded-lg text-sm mb-3">➕ 添加群组通知</button>';
       }
       
@@ -3537,32 +3531,22 @@ function getHTML() {
       } else {
         for (var k = 0; k < groupNotifs.length; k++) {
           var n = groupNotifs[k];
-          
-          // 普通管理员只能看到自己的设置
-          if (!currentUser.is_super && n.admin_id !== currentUser.id) {
-            continue;
-          }
+          var canToggle = currentUser.is_super || n.admin_id === getCurrentUserId();
           
           html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
             '<div>' +
-              '<div class="font-medium">' + (currentUser.is_super ? '管理员 ID: ' + n.admin_id : '群组: ' + escapeHtml(n.group_title || n.group_id)) + '</div>' +
-              '<div class="text-xs text-gray-400">' + (currentUser.is_super ? '群组: ' + escapeHtml(n.group_title || n.group_id) : '') + '</div>' +
+              '<div class="font-medium">管理员 ID: ' + n.admin_id + 
+                (n.admin_id === getCurrentUserId() ? ' <span class="text-xs text-blue-400">(我)</span>' : '') +
+              '</div>' +
+              '<div class="text-xs text-gray-400">群组: ' + escapeHtml(n.group_title || n.group_id) + '</div>' +
             '</div>' +
-            '<div class="flex items-center gap-3">';
-          
-          // 只有超级管理员或设置的所有者可以切换
-          if (currentUser.is_super || n.admin_id === currentUser.id) {
-            html += '<div class="switch ' + (n.enabled ? 'on' : '') + '" onclick="toggleNotification(' + n.id + ', ' + (!n.enabled) + ')"></div>';
-            
-            // 只有设置的所有者可以删除
-            if (currentUser.is_super || n.admin_id === currentUser.id) {
-              html += '<button onclick="deleteNotification(' + n.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>';
-            }
-          } else {
-            html += '<span class="text-xs text-gray-400">' + (n.enabled ? '已开启' : '已关闭') + '</span>';
-          }
-          
-          html += '</div></div>';
+            '<div class="flex items-center gap-3">' +
+              '<div class="switch ' + (n.enabled ? 'on' : '') + (canToggle ? '' : ' opacity-50 cursor-not-allowed') + '" onclick="' + (canToggle ? 'toggleNotification(' + n.id + ', ' + (!n.enabled) + ')' : '') + '"></div>' +
+              (canToggle ? 
+                '<button onclick="deleteNotification(' + n.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' : 
+                '<span class="text-xs text-gray-500 p-2">只读</span>') +
+            '</div>' +
+          '</div>';
         }
       }
       
@@ -3572,23 +3556,18 @@ function getHTML() {
     }
 
     function showAddGroupNotificationModal() {
-      if (!checkPermission('manage_notifications')) {
+      if (!currentUser.is_super) {
         showToast('权限不足', 'error');
         return;
-      }
-      
-      var adminIdField = '';
-      if (currentUser.is_super) {
-        adminIdField = '<div>' +
-          '<label class="block text-sm text-gray-400 mb-1">管理员 ID</label>' +
-          '<input type="text" id="notifAdminId" class="w-full px-4 py-2 rounded-lg">' +
-        '</div>';
       }
       
       showModal(
         '<h3 class="text-lg font-bold mb-4">添加群组专属通知</h3>' +
         '<div class="space-y-4">' +
-          adminIdField +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">管理员 ID</label>' +
+            '<input type="text" id="notifAdminId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
           '<div>' +
             '<label class="block text-sm text-gray-400 mb-1">群组</label>' +
             '<select id="notifGroupId" class="w-full px-4 py-2 rounded-lg">' +
@@ -3609,99 +3588,125 @@ function getHTML() {
       }
     }
 
-    async function addGroupNotification() {
-      if (!checkPermission('manage_notifications')) {
-        showToast('权限不足', 'error');
-        return;
-      }
-      
-      var adminId = '';
-      if (currentUser.is_super) {
-        adminId = document.getElementById('notifAdminId').value.trim();
-      } else {
-        adminId = currentUser.id;
-      }
-      
-      var groupId = document.getElementById('notifGroupId').value;
-      
-      if (currentUser.is_super && !adminId) return showToast('请输入管理员ID', 'error');
-      if (!groupId) return showToast('请选择群组', 'error');
-      
-      await api('/notifications', { method: 'POST', body: JSON.stringify({ adminId: adminId, groupId: groupId, enabled: true }) });
-      showToast('添加成功');
-      closeModal();
-      dataCache.clear('notifications');
-      await loadNotifications();
-    }
-
-    async function toggleGlobalNotification(adminId, enabled, notifId) {
-      if (!checkPermission('manage_notifications')) {
-        showToast('权限不足', 'error');
-        return;
-      }
-      
-      // 普通管理员只能管理自己的通知
-      if (!currentUser.is_super && adminId !== currentUser.id) {
+    async function toggleAdminNotification(adminId, enabled, notifId) {
+      // 如果是普通管理员，检查是否是自己的通知
+      if (!currentUser.is_super && adminId !== getCurrentUserId()) {
         showToast('只能管理自己的通知设置', 'error');
         return;
       }
       
-      await api('/notifications', { 
+      var result = await api('/notifications', { 
         method: 'POST', 
         body: JSON.stringify({ adminId: adminId, groupId: null, enabled: enabled }) 
       });
-      showToast(enabled ? '通知已开启' : '通知已关闭');
-      dataCache.clear('notifications');
-      await loadNotifications();
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast(enabled ? '通知已开启' : '通知已关闭');
+        dataCache.clear('notifications');
+        await loadNotifications();
+      }
     }
 
     async function toggleNotification(id, enabled) {
-      if (!checkPermission('manage_notifications')) {
+      // 获取通知详情
+      var data = dataCache.get('notifications');
+      if (!data) {
+        showToast('数据加载失败，请刷新重试', 'error');
+        return;
+      }
+      
+      // 查找通知
+      var notification = null;
+      for (var i = 0; i < data.notifications.length; i++) {
+        if (data.notifications[i].id == id) {
+          notification = data.notifications[i];
+          break;
+        }
+      }
+      
+      if (!notification) {
+        showToast('通知设置不存在', 'error');
+        return;
+      }
+      
+      // 检查权限：普通管理员只能管理自己的通知
+      if (!currentUser.is_super && notification.admin_id !== getCurrentUserId()) {
+        showToast('只能管理自己的通知设置', 'error');
+        return;
+      }
+      
+      var result = await api('/notifications/' + id, { method: 'PUT', body: JSON.stringify({ enabled: enabled }) });
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast(enabled ? '通知已开启' : '通知已关闭');
+        dataCache.clear('notifications');
+        await loadNotifications();
+      }
+    }
+
+    async function addGroupNotification() {
+      if (!currentUser.is_super) {
         showToast('权限不足', 'error');
         return;
       }
       
-      // 普通管理员只能管理自己的通知设置
-      if (!currentUser.is_super) {
-        var data = dataCache.get('notifications');
-        if (data && data.notifications) {
-          var notification = data.notifications.find(n => n.id === id);
-          if (!notification || notification.admin_id !== currentUser.id) {
-            showToast('只能管理自己的通知设置', 'error');
-            return;
-          }
-        }
-      }
+      var adminId = document.getElementById('notifAdminId').value.trim();
+      var groupId = document.getElementById('notifGroupId').value;
       
-      await api('/notifications/' + id, { method: 'PUT', body: JSON.stringify({ enabled: enabled }) });
-      showToast(enabled ? '通知已开启' : '通知已关闭');
-      dataCache.clear('notifications');
-      await loadNotifications();
+      if (!adminId) return showToast('请输入管理员ID', 'error');
+      if (!groupId) return showToast('请选择群组', 'error');
+      
+      var result = await api('/notifications', { method: 'POST', body: JSON.stringify({ adminId: adminId, groupId: groupId, enabled: true }) });
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast('添加成功');
+        closeModal();
+        dataCache.clear('notifications');
+        await loadNotifications();
+      }
     }
 
     async function deleteNotification(id) {
-      if (!checkPermission('manage_notifications')) {
-        showToast('权限不足', 'error');
+      // 获取通知详情
+      var data = dataCache.get('notifications');
+      if (!data) {
+        showToast('数据加载失败，请刷新重试', 'error');
         return;
       }
       
-      // 普通管理员只能管理自己的通知设置
-      if (!currentUser.is_super) {
-        var data = dataCache.get('notifications');
-        if (data && data.notifications) {
-          var notification = data.notifications.find(n => n.id === id);
-          if (!notification || notification.admin_id !== currentUser.id) {
-            showToast('只能管理自己的通知设置', 'error');
-            return;
-          }
+      // 查找通知
+      var notification = null;
+      for (var i = 0; i < data.notifications.length; i++) {
+        if (data.notifications[i].id == id) {
+          notification = data.notifications[i];
+          break;
         }
       }
       
+      if (!notification) {
+        showToast('通知设置不存在', 'error');
+        return;
+      }
+      
+      // 检查权限：普通管理员只能删除自己的通知
+      if (!currentUser.is_super && notification.admin_id !== getCurrentUserId()) {
+        showToast('只能删除自己的通知设置', 'error');
+        return;
+      }
+      
       if (!confirm('确定要删除吗？')) return;
-      await api('/notifications/' + id, { method: 'DELETE' });
-      showToast('已删除');
-      dataCache.clear('notifications');
-      await loadNotifications();
+      
+      var result = await api('/notifications/' + id, { method: 'DELETE' });
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast('已删除');
+        dataCache.clear('notifications');
+        await loadNotifications();
+      }
     }
 
     // ==================== 违禁词管理 ====================
@@ -3794,11 +3799,15 @@ function getHTML() {
       var word = document.getElementById('newBanword').value.trim();
       if (!word) return showToast('请输入违禁词', 'error');
       
-      await api('/banwords', { method: 'POST', body: JSON.stringify({ word: word }) });
-      showToast('添加成功');
-      closeModal();
-      dataCache.clear('banwords');
-      await loadBanwords();
+      var result = await api('/banwords', { method: 'POST', body: JSON.stringify({ word: word }) });
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast('添加成功');
+        closeModal();
+        dataCache.clear('banwords');
+        await loadBanwords();
+      }
     }
 
     async function batchAddBanwords() {
@@ -3810,11 +3819,15 @@ function getHTML() {
       var words = document.getElementById('batchBanwords').value.trim();
       if (!words) return showToast('请输入违禁词', 'error');
       
-      await api('/banwords', { method: 'POST', body: JSON.stringify({ words: words }) });
-      showToast('导入成功');
-      closeModal();
-      dataCache.clear('banwords');
-      await loadBanwords();
+      var result = await api('/banwords', { method: 'POST', body: JSON.stringify({ words: words }) });
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast('导入成功');
+        closeModal();
+        dataCache.clear('banwords');
+        await loadBanwords();
+      }
     }
 
     async function deleteBanword(id) {
@@ -3823,10 +3836,16 @@ function getHTML() {
         return;
       }
       
-      await api('/banwords/' + id, { method: 'DELETE' });
-      showToast('已删除');
-      dataCache.clear('banwords');
-      await loadBanwords();
+      if (!confirm('确定要删除吗？')) return;
+      
+      var result = await api('/banwords/' + id, { method: 'DELETE' });
+      if (result && result.error) {
+        showToast(result.error, 'error');
+      } else {
+        showToast('已删除');
+        dataCache.clear('banwords');
+        await loadBanwords();
+      }
     }
 
     async function exportBanwords() {
