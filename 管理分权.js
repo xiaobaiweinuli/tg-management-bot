@@ -1,4 +1,3 @@
-
 /**
  * 星霜Pro群组管理系统 - Cloudflare Worker
  * 基于 Cloudflare Workers + D1 数据库
@@ -8,7 +7,6 @@
  * - SUPER_ADMINS: 超级管理员ID列表（逗号分隔）
  * - WEBHOOK_SECRET: Webhook 安全密钥
  * - WEBAPP_URL: 管理面板 URL（可选，用于 /panel 命令）
- * 
  * D1 数据库绑定：DB
  */
 
@@ -57,7 +55,11 @@ const CONFIG = {
     
     // 系统管理权限（仅超级管理员）
     MANAGE_SYSTEM: 'manage_system',         // 系统设置（Webhook等）
-    VIEW_SYSTEM: 'view_system'              // 查看系统状态
+    VIEW_SYSTEM: 'view_system',              // 查看系统状态
+    
+    // 消息管理权限（新增）
+    MANAGE_MESSAGES: 'manage_messages',     // 管理消息检查设置
+    VIEW_MESSAGES: 'view_messages'          // 查看消息日志
   },
   
   // 默认权限组合
@@ -73,14 +75,14 @@ const CONFIG = {
       'view_groups', 'manage_groups', 'view_bans',
       'manage_bans', 'view_whitelist', 'manage_whitelist',
       'view_banwords', 'view_logs', 'view_notifications',
-      'manage_notifications'
+      'manage_notifications', 'view_messages'
     ],
     
     // 审核员权限
     REVIEWER: [
       'view_groups', 'view_bans', 'manage_bans',
       'view_whitelist', 'manage_whitelist',
-      'view_banwords', 'view_logs'
+      'view_banwords', 'view_logs', 'view_messages'
     ],
     
     // 观察员权限
@@ -125,6 +127,33 @@ function htmlResponse(html) {
   return new Response(html, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' }
   });
+}
+
+// ==================== 新增工具函数 ====================
+// 检查消息是否包含违禁词
+async function checkMessageForBanWords(db, text) {
+  if (!text) return { hasBanWord: false, words: [] };
+  
+  try {
+    const banWords = await db.prepare('SELECT word FROM ban_words').all();
+    const lowerText = text.toLowerCase();
+    const foundWords = [];
+    
+    for (const { word } of banWords.results) {
+      const lowerWord = word.toLowerCase();
+      if (lowerText.includes(lowerWord)) {
+        foundWords.push(word);
+      }
+    }
+    
+    return {
+      hasBanWord: foundWords.length > 0,
+      words: foundWords
+    };
+  } catch (e) {
+    console.error('Check message for ban words error:', e);
+    return { hasBanWord: false, words: [] };
+  }
 }
 
 // ==================== 权限检查函数 ====================
@@ -332,9 +361,12 @@ async function initDatabase(db) {
       photo_url TEXT,
       photo_base64 TEXT,
       anti_ad INTEGER DEFAULT 1,
+      check_messages INTEGER DEFAULT 1,
       require_chinese_name INTEGER DEFAULT 1,
       require_avatar INTEGER DEFAULT 1,
       ban_duration TEXT DEFAULT '24h',
+      action_on_message TEXT DEFAULT 'delete',
+      mute_duration INTEGER DEFAULT 10,
       created_at TEXT,
       updated_at TEXT
     )`,
@@ -499,7 +531,16 @@ class TelegramAPI {
   }
 
   async setWebhook(url, secret = null) {
-    const params = { url, allowed_updates: ['message', 'chat_join_request', 'my_chat_member', 'callback_query'] };
+    const params = { 
+      url, 
+      allowed_updates: [
+        'message', 
+        'chat_join_request', 
+        'my_chat_member', 
+        'callback_query',
+        'edited_message'
+      ] 
+    };
     if (secret) params.secret_token = secret;
     return this.request('setWebhook', params);
   }
@@ -636,12 +677,34 @@ async function checkUser(telegram, db, user, groupId) {
   
   if (group.anti_ad) {
     const banWords = await db.prepare('SELECT word FROM ban_words').all();
+    
+    // 获取用户的所有文本信息（包括简介）
     const fullName = `${user.first_name || ''} ${user.last_name || ''}`.toLowerCase();
     const username = (user.username || '').toLowerCase();
     
+    // 实时获取用户简介（bio）
+    let userBio = '';
+    try {
+      const chatResult = await telegram.getChat(user.id);
+      if (chatResult.ok) {
+        const chat = chatResult.result;
+        userBio = chat.bio || ''; // 获取简介，如果为空则为空字符串
+      }
+    } catch (e) {
+      console.error('Failed to get user bio:', e);
+      // 如果获取失败，简介为空，不影响检测
+    }
+    
+    const bio = userBio.toLowerCase();
+    
     for (const { word } of banWords.results) {
-      if (fullName.includes(word.toLowerCase()) || username.includes(word.toLowerCase())) {
-        reasons.push(`用户名包含违禁词: ${word}`);
+      const lowerWord = word.toLowerCase();
+      
+      // 检查昵称、用户名和简介（简介为空时不检测）
+      if (fullName.includes(lowerWord) || 
+          username.includes(lowerWord) || 
+          (bio && bio.includes(lowerWord))) { // 只有简介不为空时才检测
+        reasons.push(`包含违禁词: ${word}`);
         break;
       }
     }
@@ -657,6 +720,215 @@ function calculateBanExpiry(duration) {
   if (duration === '24h') return now + 86400;
   if (duration === '7d') return now + 604800;
   return now + 86400;
+}
+
+// ==================== 处理群组消息 ====================
+async function handleGroupMessage(telegram, db, env, message) {
+  const chatId = message.chat.id;
+  const userId = message.from.id;
+  const messageId = message.message_id;
+  const text = message.text || message.caption || '';
+  
+  // 忽略机器人的消息
+  if (message.from.is_bot) return;
+  
+  // 检查用户是否在白名单
+  const whitelist = await db.prepare(
+    'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
+  ).bind(userId.toString(), chatId.toString()).first();
+  if (whitelist) {
+    return; // 白名单用户跳过检查
+  }
+  
+  // 检查用户是否是管理员（包括超级管理员和普通管理员）
+  const user = await getUserWithPermissions(db, env, userId);
+  if (user) {
+    // 用户是管理员，跳过消息检查
+    return;
+  }
+  
+  // 获取群组设置
+  const group = await db.prepare('SELECT * FROM groups WHERE id = ?').bind(chatId.toString()).first();
+  if (!group) return;
+  
+  // 检查是否启用了消息检查
+  if (!group.check_messages) return;
+  
+  // 记录消息日志（用于防刷屏）
+  await addLog(db, 'message', 'sent', `用户 ${message.from.first_name} 发送消息: ${text.substring(0, 50)}...`, userId.toString(), chatId.toString());
+  
+  // 检查消息内容（只检查违禁词，不检查链接）
+  let violations = [];
+  
+  // 检查违禁词
+  const banWordResult = await checkMessageForBanWords(db, text);
+  if (banWordResult.hasBanWord) {
+    violations.push({
+      type: 'ban_word',
+      words: banWordResult.words,
+      message: `包含违禁词: ${banWordResult.words.join(', ')}`
+    });
+  }
+  
+  // 如果有违规行为，进行处理
+  if (violations.length > 0) {
+    await handleMessageViolation(telegram, db, env, group, message, violations);
+  }
+  
+  // 防刷屏检查（可选）
+  await checkSpamProtection(telegram, db, env, group, message);
+}
+
+// 处理消息违规
+async function handleMessageViolation(telegram, db, env, group, message, violations) {
+  const chatId = message.chat.id;
+  const userId = message.from.id;
+  const messageId = message.message_id;
+  const violationsText = violations.map(v => v.message).join('; ');
+  
+  // 记录违规日志
+  await addLog(db, 'violation', 'detected', violationsText, userId.toString(), chatId.toString());
+  
+  // 根据群组设置采取行动
+  const action = group.action_on_message || 'delete';
+  
+  try {
+    // 删除违规消息
+    await telegram.request('deleteMessage', {
+      chat_id: chatId,
+      message_id: messageId
+    });
+    
+    await addLog(db, 'moderation', 'message_deleted', `删除违规消息: ${violationsText}`, userId.toString(), chatId.toString());
+    
+    // 根据设置执行进一步操作
+    switch (action) {
+      case 'delete_ban':
+        // 删除并封禁
+        // 再次检查是否在白名单或是管理员（防止误封）
+        const whitelist = await db.prepare(
+          'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
+        ).bind(userId.toString(), chatId.toString()).first();
+        
+        const user = await getUserWithPermissions(db, env, userId);
+        
+        // 如果是白名单或管理员，不封禁
+        if (whitelist || user) {
+          await addLog(db, 'moderation', 'skip_ban', `用户是白名单或管理员，跳过封禁`, userId.toString(), chatId.toString());
+          break;
+        }
+        
+        const banExpiry = calculateBanExpiry(group.ban_duration);
+        await telegram.banChatMember(chatId, userId, banExpiry);
+        
+        const expiryText = banExpiry ? new Date(banExpiry * 1000).toISOString() : null;
+        await db.prepare(
+          'INSERT INTO bans (user_id, username, first_name, last_name, photo_base64, group_id, reason, banned_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).bind(
+          userId.toString(), message.from.username || '', message.from.first_name || '', 
+          message.from.last_name || '', null, chatId.toString(), 
+          violationsText, formatBeijingTime(), expiryText
+        ).run();
+        
+        await notifyAdmins(telegram, db, env, chatId, message.from, [violationsText], null);
+        break;
+        
+      case 'mute':
+        // 禁言
+        // 检查是否在白名单或是管理员
+        const whitelistMute = await db.prepare(
+          'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
+        ).bind(userId.toString(), chatId.toString()).first();
+        
+        const userMute = await getUserWithPermissions(db, env, userId);
+        
+        // 如果是白名单或管理员，不禁言
+        if (whitelistMute || userMute) {
+          await addLog(db, 'moderation', 'skip_mute', `用户是白名单或管理员，跳过禁言`, userId.toString(), chatId.toString());
+          break;
+        }
+        
+        const muteUntil = Math.floor(Date.now() / 1000) + (group.mute_duration || 10) * 60;
+        await telegram.request('restrictChatMember', {
+          chat_id: chatId,
+          user_id: userId,
+          permissions: {
+            can_send_messages: false,
+            can_send_media_messages: false,
+            can_send_other_messages: false,
+            can_add_web_page_previews: false
+          },
+          until_date: muteUntil
+        });
+        
+        await addLog(db, 'moderation', 'user_muted', `用户被禁言 ${group.mute_duration}分钟: ${violationsText}`, userId.toString(), chatId.toString());
+        break;
+        
+      case 'warn':
+        // 警告用户
+        try {
+          await telegram.sendMessage(
+            chatId,
+            `⚠️ <b>警告</b>\n用户 ${message.from.first_name} 违反群规:\n${violationsText}`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (e) {
+          console.log('Failed to send warning message:', e.message);
+        }
+        break;
+        
+      default:
+        // 仅删除消息
+        break;
+    }
+    
+  } catch (e) {
+    console.error('Handle message violation error:', e);
+    await addLog(db, 'error', 'moderation_failed', e.message, userId.toString(), chatId.toString());
+  }
+}
+
+// 防刷屏检查
+async function checkSpamProtection(telegram, db, env, group, message) {
+  // 检查是否在白名单或是管理员
+  const whitelist = await db.prepare(
+    'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
+  ).bind(message.from.id.toString(), message.chat.id.toString()).first();
+  
+  const user = await getUserWithPermissions(db, env, message.from.id);
+  
+  // 如果是白名单或管理员，跳过刷屏检查
+  if (whitelist || user) {
+    return;
+  }
+  
+  // 简单示例：检查短时间内大量消息
+  const recentMessages = await db.prepare(
+    'SELECT COUNT(*) as count FROM logs WHERE user_id = ? AND group_id = ? AND type = ? AND created_at > datetime(?, ?)'
+  ).bind(
+    message.from.id.toString(),
+    message.chat.id.toString(),
+    'message',
+    formatBeijingTime(new Date(Date.now() - 60000)), // 过去1分钟
+    '-1 minute'
+  ).first();
+  
+  if (recentMessages && recentMessages.count > 15) {
+    // 如果1分钟内发送超过15条消息，视为刷屏
+    await telegram.request('restrictChatMember', {
+      chat_id: message.chat.id,
+      user_id: message.from.id,
+      permissions: {
+        can_send_messages: false,
+        can_send_media_messages: false,
+        can_send_other_messages: false,
+        can_add_web_page_previews: false
+      },
+      until_date: Math.floor(Date.now() / 1000) + 300 // 禁言5分钟
+    });
+    
+    await addLog(db, 'moderation', 'anti_spam', '用户因刷屏被禁言5分钟', message.from.id.toString(), message.chat.id.toString());
+  }
 }
 
 // ==================== Webhook 处理 ====================
@@ -688,8 +960,16 @@ async function handleWebhook(request, env) {
       await handleCallbackQuery(telegram, db, env, update.callback_query);
     }
     
-    if (update.message && update.message.text) {
-      await handleCommand(telegram, db, env, update.message);
+    if (update.message) {
+      // 处理命令（私聊和群聊）
+      if (update.message.text && (update.message.text.startsWith('/') || update.message.chat.type === 'private')) {
+        await handleCommand(telegram, db, env, update.message);
+      }
+      
+      // 处理群组消息（检查违禁词）
+      if (update.message.chat.type === 'group' || update.message.chat.type === 'supergroup') {
+        await handleGroupMessage(telegram, db, env, update.message);
+      }
     }
     
     return jsonResponse({ ok: true });
@@ -706,6 +986,27 @@ async function handleJoinRequest(telegram, db, env, chat, user) {
   await addLog(db, 'join', 'request', `用户 ${user.first_name} (${user.id}) 申请加入 ${chat.title}`, user.id.toString(), chat.id.toString());
   
   const userInfo = await getUserInfoWithPhoto(telegram, db, user.id);
+  
+  // 检查是否是管理员（包括超级管理员）
+  const adminUser = await getUserWithPermissions(db, env, user.id);
+  if (adminUser) {
+    // 用户是管理员，直接批准入群申请
+    await telegram.approveChatJoinRequest(chat.id, user.id);
+    await addLog(db, 'join', 'approved', `管理员 ${user.first_name} (${user.id}) 直接通过入群申请`, user.id.toString(), chat.id.toString());
+    return;
+  }
+  
+  // 检查用户是否在白名单
+  const whitelist = await db.prepare(
+    'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
+  ).bind(user.id.toString(), chat.id.toString()).first();
+  if (whitelist) {
+    // 用户在白名单，直接批准入群申请
+    await telegram.approveChatJoinRequest(chat.id, user.id);
+    await addLog(db, 'join', 'approved', `白名单用户 ${user.first_name} (${user.id}) 直接通过入群申请`, user.id.toString(), chat.id.toString());
+    return;
+  }
+  
   const checkResult = await checkUser(telegram, db, user, chat.id);
   
   if (checkResult.passed) {
@@ -755,6 +1056,22 @@ async function handleCallbackQuery(telegram, db, env, query) {
   
   if (action === 'recheck') {
     const [groupId, userId] = params;
+    
+    // 检查是否是管理员或白名单
+    const adminUser = await getUserWithPermissions(db, env, userId);
+    const whitelist = await db.prepare(
+      'SELECT * FROM whitelist WHERE user_id = ? AND (group_id IS NULL OR group_id = ?)'
+    ).bind(userId, groupId).first();
+    
+    if (adminUser || whitelist) {
+      await telegram.unbanChatMember(groupId, userId);
+      await db.prepare('UPDATE bans SET is_active = 0 WHERE user_id = ? AND group_id = ?').bind(userId, groupId).run();
+      await telegram.answerCallbackQuery(query.id, '✅ 您是管理员/白名单，已解封！请重新申请加入群组。', true);
+      await telegram.sendMessage(userId, '✅ 您已解封，请重新申请加入群组。');
+      await addLog(db, 'ban', 'unban_admin_whitelist', `管理员/白名单用户重新检测通过`, userId, groupId);
+      return;
+    }
+    
     const checkResult = await checkUser(telegram, db, query.from, groupId);
     
     if (checkResult.passed) {
@@ -853,7 +1170,9 @@ async function handleCommand(telegram, db, env, message) {
         `• 自动封禁不合规用户\n` +
         `• 支持白名单管理\n` +
         `• 支持多群组管理\n` +
-        `• 封禁通知推送\n\n` +
+        `• 封禁通知推送\n` +
+        `• 群内消息违禁词检测\n` +
+        `• 违规消息自动处理\n\n` +
         `<b>使用方法：</b>\n` +
         `1. 将Bot添加为群组管理员\n` +
         `2. 开启群组"加入请求审核"\n` +
@@ -966,16 +1285,21 @@ async function syncGroup(telegram, db, chatId) {
   if (!groupInfo) return;
   
   await db.prepare(`
-    INSERT OR REPLACE INTO groups (id, title, username, photo_base64, created_at, updated_at, anti_ad, require_chinese_name, require_avatar, ban_duration)
+    INSERT OR REPLACE INTO groups (id, title, username, photo_base64, created_at, updated_at, 
+            anti_ad, check_messages, require_chinese_name, require_avatar, ban_duration, action_on_message, mute_duration)
     VALUES (?, ?, ?, ?, COALESCE((SELECT created_at FROM groups WHERE id = ?), ?), ?, 
             COALESCE((SELECT anti_ad FROM groups WHERE id = ?), 1),
+            COALESCE((SELECT check_messages FROM groups WHERE id = ?), 1),
             COALESCE((SELECT require_chinese_name FROM groups WHERE id = ?), 1),
             COALESCE((SELECT require_avatar FROM groups WHERE id = ?), 1),
-            COALESCE((SELECT ban_duration FROM groups WHERE id = ?), '24h'))
+            COALESCE((SELECT ban_duration FROM groups WHERE id = ?), '24h'),
+            COALESCE((SELECT action_on_message FROM groups WHERE id = ?), 'delete'),
+            COALESCE((SELECT mute_duration FROM groups WHERE id = ?), 10))
   `).bind(
     groupInfo.id, groupInfo.title, groupInfo.username, groupInfo.photo_base64,
     groupInfo.id, formatBeijingTime(), formatBeijingTime(),
-    groupInfo.id, groupInfo.id, groupInfo.id, groupInfo.id
+    groupInfo.id, groupInfo.id, groupInfo.id, groupInfo.id, 
+    groupInfo.id, groupInfo.id, groupInfo.id
   ).run();
 }
 
@@ -1060,7 +1384,9 @@ async function handleAPI(request, env, path) {
         manage_admins: '管理其他管理员',
         manage_permissions: '管理权限',
         manage_system: '系统设置',
-        view_system: '查看系统状态'
+        view_system: '查看系统状态',
+        manage_messages: '管理消息检查设置',
+        view_messages: '查看消息日志'
       }
     });
   }
@@ -1089,9 +1415,6 @@ async function handleAPI(request, env, path) {
   try {
     // ========== 系统状态 ==========
     if (path === '/api/stats') {
-      // 移除权限检查，因为控制面板需要显示统计信息给所有管理员
-      // 但是webhook信息只对超级管理员或拥有view_system权限的管理员显示
-      
       const groups = await db.prepare('SELECT COUNT(*) as count FROM groups').first();
       const bans = await db.prepare('SELECT COUNT(*) as count FROM bans WHERE is_active = 1').first();
       const whitelist = await db.prepare('SELECT COUNT(*) as count FROM whitelist').first();
@@ -1185,11 +1508,13 @@ async function handleAPI(request, env, path) {
         const data = await request.json();
         await db.prepare(`
           UPDATE groups SET 
-            anti_ad = ?, require_chinese_name = ?, require_avatar = ?, ban_duration = ?, updated_at = ?
+            anti_ad = ?, check_messages = ?, require_chinese_name = ?, 
+            require_avatar = ?, ban_duration = ?, action_on_message = ?, mute_duration = ?, updated_at = ?
           WHERE id = ?
         `).bind(
-          data.anti_ad ? 1 : 0, data.require_chinese_name ? 1 : 0, 
-          data.require_avatar ? 1 : 0, data.ban_duration, formatBeijingTime(), groupId
+          data.anti_ad ? 1 : 0, data.check_messages ? 1 : 0, data.require_chinese_name ? 1 : 0, 
+          data.require_avatar ? 1 : 0, data.ban_duration, data.action_on_message || 'delete',
+          data.mute_duration || 10, formatBeijingTime(), groupId
         ).run();
         await addLog(db, 'group', 'update', `更新群组设置 ${groupId}`, user.user_id);
         return jsonResponse({ success: true });
@@ -2581,6 +2906,10 @@ function getHTML() {
                 '<div class="switch ' + (g.anti_ad ? 'on' : '') + '" onclick="toggleGroupSetting(\\'' + g.id + '\\', \\'anti_ad\\', ' + (!g.anti_ad) + ')"></div>' +
               '</div>' +
               '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">检查消息</span>' +
+                '<div class="switch ' + (g.check_messages ? 'on' : '') + '" onclick="toggleGroupSetting(\\'' + g.id + '\\', \\'check_messages\\', ' + (!g.check_messages) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
                 '<span class="text-gray-400">中文名</span>' +
                 '<div class="switch ' + (g.require_chinese_name ? 'on' : '') + '" onclick="toggleGroupSetting(\\'' + g.id + '\\', \\'require_chinese_name\\', ' + (!g.require_chinese_name) + ')"></div>' +
               '</div>' +
@@ -2596,6 +2925,19 @@ function getHTML() {
                   '<option value="7d"' + (g.ban_duration === '7d' ? ' selected' : '') + '>7天</option>' +
                   '<option value="forever"' + (g.ban_duration === 'forever' ? ' selected' : '') + '>永久</option>' +
                 '</select>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">违规处理</span>' +
+                '<select onchange="updateMessageAction(\\'' + g.id + '\\', this.value)" class="px-2 py-1 rounded text-xs">' +
+                  '<option value="delete"' + (g.action_on_message === 'delete' ? ' selected' : '') + '>仅删除</option>' +
+                  '<option value="delete_ban"' + (g.action_on_message === 'delete_ban' ? ' selected' : '') + '>删除并封禁</option>' +
+                  '<option value="mute"' + (g.action_on_message === 'mute' ? ' selected' : '') + '>删除并禁言</option>' +
+                  '<option value="warn"' + (g.action_on_message === 'warn' ? ' selected' : '') + '>删除并警告</option>' +
+                '</select>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">禁言时长(分)</span>' +
+                '<input type="number" value="' + (g.mute_duration || 10) + '" min="1" max="1440" onchange="updateMuteDuration(\\'' + g.id + '\\', this.value)" class="w-16 px-2 py-1 rounded text-xs">' +
               '</div>' +
             '</div>' +
             '<button onclick="deleteGroup(\\'' + g.id + '\\')" class="btn-danger w-full py-2 rounded-lg text-sm">删除群组</button>';
@@ -2640,9 +2982,12 @@ function getHTML() {
       
       var data = {
         anti_ad: group.anti_ad,
+        check_messages: group.check_messages,
         require_chinese_name: group.require_chinese_name,
         require_avatar: group.require_avatar,
-        ban_duration: group.ban_duration
+        ban_duration: group.ban_duration,
+        action_on_message: group.action_on_message,
+        mute_duration: group.mute_duration
       };
       data[setting] = value ? 1 : 0;
       
@@ -2672,12 +3017,89 @@ function getHTML() {
         method: 'PUT',
         body: JSON.stringify({
           anti_ad: group.anti_ad,
+          check_messages: group.check_messages,
           require_chinese_name: group.require_chinese_name,
           require_avatar: group.require_avatar,
-          ban_duration: duration
+          ban_duration: duration,
+          action_on_message: group.action_on_message,
+          mute_duration: group.mute_duration
         })
       });
       showToast('封禁时长已更新');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    // 新增：更新消息处理方式
+    async function updateMessageAction(groupId, action) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var groups = dataCache.get('groups') || [];
+      var group = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].id === groupId) {
+          group = groups[i];
+          break;
+        }
+      }
+      if (!group) return;
+      
+      await api('/groups/' + groupId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          anti_ad: group.anti_ad,
+          check_messages: group.check_messages,
+          require_chinese_name: group.require_chinese_name,
+          require_avatar: group.require_avatar,
+          ban_duration: group.ban_duration,
+          action_on_message: action,
+          mute_duration: group.mute_duration
+        })
+      });
+      showToast('消息处理方式已更新');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    // 新增：更新禁言时长
+    async function updateMuteDuration(groupId, duration) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var durationNum = parseInt(duration);
+      if (isNaN(durationNum) || durationNum < 1 || durationNum > 1440) {
+        showToast('请输入1-1440之间的数字', 'error');
+        return;
+      }
+      
+      var groups = dataCache.get('groups') || [];
+      var group = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].id === groupId) {
+          group = groups[i];
+          break;
+        }
+      }
+      if (!group) return;
+      
+      await api('/groups/' + groupId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          anti_ad: group.anti_ad,
+          check_messages: group.check_messages,
+          require_chinese_name: group.require_chinese_name,
+          require_avatar: group.require_avatar,
+          ban_duration: group.ban_duration,
+          action_on_message: group.action_on_message,
+          mute_duration: durationNum
+        })
+      });
+      showToast('禁言时长已更新');
       dataCache.clear('groups');
       await loadGroups();
     }
@@ -3296,6 +3718,7 @@ function getHTML() {
         '违禁词管理': ['manage_banwords', 'view_banwords'],
         '通知管理': ['manage_notifications', 'view_notifications'],
         '日志查看': ['view_logs'],
+        '消息管理': ['manage_messages', 'view_messages'],
         '管理员管理': ['manage_admins', 'manage_permissions'],
         '系统管理': ['manage_system', 'view_system']
       };
@@ -3906,7 +4329,8 @@ function getHTML() {
       for (var i = 0; i < banwords.length; i++) {
         words.push(banwords[i].word);
       }
-      var text = words.join('\\n');
+      var text = words.join('\\
+');
       await navigator.clipboard.writeText(text);
       showToast('已复制到剪贴板');
     }
@@ -3926,7 +4350,7 @@ function getHTML() {
       
       var content = document.getElementById('content');
       
-      var types = ['all', 'join', 'ban', 'whitelist', 'admin', 'notification', 'system', 'error'];
+      var types = ['all', 'join', 'ban', 'whitelist', 'admin', 'notification', 'system', 'error', 'message', 'violation', 'moderation'];
       
       var html = '<div class="flex gap-2 overflow-x-auto pb-2 mb-4">';
       for (var i = 0; i < types.length; i++) {
@@ -3953,7 +4377,10 @@ function getHTML() {
         error: 'text-red-500',
         auth: 'text-cyan-400',
         group: 'text-orange-400',
-        banword: 'text-pink-400'
+        banword: 'text-pink-400',
+        message: 'text-indigo-400',
+        violation: 'text-rose-400',
+        moderation: 'text-amber-400'
       };
       
       var html = '';
