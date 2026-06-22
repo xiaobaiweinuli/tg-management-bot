@@ -1,13 +1,15 @@
-name = "tg-management-bot"
+name = "xingshuang-pro"
 main = "worker.js"
 compatibility_date = "2026-01-01"
+[assets]
+directory = "./public"
 
-
-[[env.production.d1_databases]]
+[[d1_databases]]
 binding = "DB"
-database_name = "tg-management"
-database_id = "8945d16d-c34ccf693f"
+database_name = "xingshuang-pro"
+database_id = "3ba172d9-29fb-4430-8cf7-59a19d8ee665"
 [vars]
-ADMIN_KEY = "1464gWg"
-BOT_TOKEN = "84507746:AAF6WwPj8MxiujT0Q"
-WEBHOOK_SECRET = "164h"
+BOT_TOKEN = ""
+WEBHOOK_SECRET = ""
+SUPER_ADMINS = ""
+WEBAPP_URL = ""

@@ -1,0 +1,2935 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>星霜Pro 群组管理系统</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { 
+      margin: 0; 
+      padding: 0; 
+      height: 100%; 
+      overflow: hidden;
+    }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    }
+    #app {
+      height: 100%;
+      overflow: hidden;
+    }
+    .page {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .page.hidden {
+      display: none !important;
+    }
+    #mainPage {
+      overflow: hidden;
+    }
+    #mainContent {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      padding-bottom: 20px;
+    }
+    .glass {
+      background: rgba(255, 255, 255, 0.05);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .tab-active { 
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    .btn-danger {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    }
+    .btn-success {
+      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    }
+    .btn-warning {
+      background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+    }
+    .btn-info {
+      background: linear-gradient(135deg, #a1c4fd 0%, #c2e9fb 100%);
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    }
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal.active { display: flex; }
+    .modal-content {
+      background: #1a1a2e;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      max-width: 500px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 24px;
+      border-radius: 8px;
+      color: white;
+      z-index: 2000;
+      animation: slideUp 0.3s;
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    .switch {
+      width: 48px;
+      height: 24px;
+      background: #374151;
+      border-radius: 12px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    .switch.on { background: #10b981; }
+    .switch::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: left 0.3s;
+    }
+    .switch.on::after { left: 26px; }
+    .avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: white;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .avatar-lg {
+      width: 48px;
+      height: 48px;
+    }
+    .stat-card {
+      background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
+    }
+    input, select, textarea {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: white;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    input::placeholder, textarea::placeholder {
+      color: rgba(255,255,255,0.4);
+    }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
+    .loading-spinner {
+      border: 2px solid rgba(255,255,255,0.1);
+      border-top: 2px solid #667eea;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .fade-update {
+      animation: fadeUpdate 0.3s ease;
+    }
+    @keyframes fadeUpdate {
+      0% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+    .user-tag {
+      background: rgba(102, 126, 234, 0.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .permission-tag {
+      background: rgba(16, 185, 129, 0.2);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      display: inline-block;
+      margin: 2px;
+    }
+    .permission-tag.disabled {
+      background: rgba(239, 68, 68, 0.2);
+      opacity: 0.6;
+    }
+    .tabs-container {
+      flex-shrink: 0;
+      overflow-x: auto;
+      padding: 0 16px 8px;
+      display: flex;
+      gap: 8px;
+    }
+    .tabs-container::-webkit-scrollbar {
+      display: none;
+    }
+    .header-container {
+      flex-shrink: 0;
+      padding: 16px;
+      padding-bottom: 8px;
+    }
+    .permission-checkbox {
+      display: flex;
+      align-items: center;
+      padding: 8px;
+      border-radius: 8px;
+      margin-bottom: 4px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .permission-checkbox:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .checkbox {
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 4px;
+      margin-right: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .checkbox.checked {
+      background: #667eea;
+      border-color: #667eea;
+    }
+    .checkbox.checked::after {
+      content: '✓';
+      color: white;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .permission-group {
+      margin-bottom: 16px;
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .permission-group-title {
+      font-weight: bold;
+      margin-bottom: 8px;
+      color: #a78bfa;
+    }
+    .admin-only {
+      opacity: 0.7;
+      position: relative;
+    }
+    .admin-only::after {
+      content: '👑';
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      font-size: 10px;
+    }
+  </style>
+</head>
+<body class="text-white">
+  <div id="app">
+    <!-- 加载页面 -->
+    <div id="loadingPage" class="page items-center justify-center">
+      <div class="text-center">
+        <div class="text-6xl mb-4">🌟</div>
+        <h1 class="text-3xl font-bold mb-2">星霜Pro</h1>
+        <p class="text-gray-400 mb-6">群组管理系统</p>
+        <div class="loading-spinner mx-auto mb-4"></div>
+        <div id="loadingStatus" class="text-gray-400">正在验证身份...</div>
+      </div>
+    </div>
+
+    <!-- 错误页面 -->
+    <div id="errorPage" class="page items-center justify-center hidden">
+      <div class="text-center px-6">
+        <div class="text-6xl mb-4">🚫</div>
+        <h1 class="text-2xl font-bold mb-2" id="errorTitle">访问被拒绝</h1>
+        <p id="errorMessage" class="text-gray-400 mb-4">请在 Telegram 中打开此页面</p>
+        <div id="errorDetails" class="text-sm text-gray-500 mb-6"></div>
+        <button onclick="retryAuth()" class="btn-primary px-6 py-2 rounded-lg">重试</button>
+      </div>
+    </div>
+
+    <!-- 主界面 -->
+    <div id="mainPage" class="page hidden">
+      <!-- 头部 -->
+      <div class="header-container">
+        <header class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="text-3xl">🌟</span>
+            <div>
+              <h1 class="text-xl font-bold">星霜Pro</h1>
+              <p class="text-xs text-gray-400" id="currentUser">群组管理系统</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="userRole" class="text-xs px-2 py-1 rounded bg-blue-500/20">加载中...</span>
+            <button onclick="manualRefresh()" id="refreshBtn" class="p-2 rounded-lg glass hover:bg-white/10">🔄</button>
+          </div>
+        </header>
+      </div>
+
+      <!-- 标签页导航 -->
+      <div class="tabs-container" id="tabsContainer">
+        <!-- 标签页会根据权限动态生成 -->
+      </div>
+
+      <!-- 内容区域 -->
+      <div id="mainContent">
+        <div id="content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模态框 -->
+  <div id="modal" class="modal" onclick="if(event.target === this) closeModal()">
+    <div class="modal-content p-6" id="modalContent"></div>
+  </div>
+
+  <script>
+    // ==================== 全局状态 ====================
+    let token = null;
+    let currentUser = null;
+    let currentTab = 'dashboard';
+    let tg = null;
+    let permissionConfig = null;
+    var appState = {
+      currentUser: null,
+      currentTab: 'dashboard',
+      filters: {
+        bans: { search: '', groupId: '', dateFrom: '', dateTo: '' },
+        logs: { type: 'all', search: '', userId: '', groupId: '', dateFrom: '', dateTo: '' },
+        banwords: { group: 'all', matchType: 'all', search: '' }
+      },
+      pagination: {
+        logs: { nextCursor: null, loading: false }
+      }
+    };
+    
+    // ==================== 用户ID辅助函数 ====================
+    function getCurrentUserId() {
+        if (!currentUser) return null;
+        // 优先使用 user_id，如果不存在则使用 id
+        return currentUser.user_id || currentUser.id;
+    }
+    
+    // ==================== 权限检查 ====================
+    function checkPermission(permission) {
+      if (!currentUser) return false;
+      if (currentUser.is_super) return true;
+      if (!currentUser.permissions) return false;
+      return currentUser.permissions.includes(permission);
+    }
+
+    function canUseGlobalScope() {
+      return !!(currentUser && (currentUser.is_super || currentUser.is_global_admin));
+    }
+    
+    // ==================== 缓存系统 ====================
+    const dataCache = {
+      // 缓存结构: { data: any, timestamp: number, loading: boolean }
+      stats: null,
+      groups: null,
+      bans: null,
+      whitelist: null,
+      admins: null,
+      notifications: null,
+      banwords: null,
+      logs: null,
+      
+      // 缓存时间配置（毫秒）
+      cacheTimes: {
+        stats: 30000,     // 30秒
+        groups: 30000,    // 30秒
+        bans: 10000,      // 10秒
+        whitelist: 30000, // 30秒
+        admins: 60000,    // 60秒
+        notifications: 60000, // 60秒
+        banwords: 60000,  // 60秒
+        logs: 5000        // 5秒
+      },
+      
+      // 检查缓存是否有效
+      isValid(cacheKey) {
+        const cache = this[cacheKey];
+        if (!cache || !cache.timestamp) return false;
+        const cacheTime = this.cacheTimes[cacheKey] || 30000;
+        return Date.now() - cache.timestamp < cacheTime;
+      },
+      
+      // 获取缓存数据
+      get(cacheKey) {
+        if (this.isValid(cacheKey)) {
+          return this[cacheKey].data;
+        }
+        return null;
+      },
+      
+      // 设置缓存数据
+      set(cacheKey, data) {
+        this[cacheKey] = {
+          data: data,
+          timestamp: Date.now(),
+          loading: false
+        };
+      },
+      
+      // 标记为正在加载
+      setLoading(cacheKey, loading = true) {
+        if (this[cacheKey]) {
+          this[cacheKey].loading = loading;
+        } else {
+          this[cacheKey] = { loading: loading };
+        }
+      },
+      
+      // 检查是否正在加载
+      isLoading(cacheKey) {
+        return this[cacheKey] && this[cacheKey].loading === true;
+      },
+      
+      // 清除特定缓存
+      clear(cacheKey) {
+        this[cacheKey] = null;
+      },
+      
+      // 清除所有缓存
+      clearAll() {
+        Object.keys(this.cacheTimes).forEach(key => {
+          this[key] = null;
+        });
+      },
+      
+      // 获取数据（带缓存逻辑）
+      async fetch(cacheKey, apiPath, forceRefresh = false) {
+        // 如果强制刷新或缓存无效，则重新获取
+        if (forceRefresh || !this.isValid(cacheKey)) {
+          this.setLoading(cacheKey, true);
+          try {
+            const data = await api(apiPath);
+            if (data !== null) {
+              this.set(cacheKey, data);
+            }
+            return data;
+          } finally {
+            this.setLoading(cacheKey, false);
+          }
+        }
+        
+        // 如果正在加载，等待一小段时间后重试
+        if (this.isLoading(cacheKey)) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return this.fetch(cacheKey, apiPath, false);
+        }
+        
+        // 返回缓存数据
+        return this.get(cacheKey);
+      }
+    };
+
+    // ==================== 头像渲染辅助函数 ====================
+    function renderAvatar(photoBase64, name, size) {
+      size = size || '';
+      var sizeClass = size === 'lg' ? 'avatar-lg' : '';
+      var initial = ((name || '?')[0] || '?').toUpperCase();
+      var safeInitial = escapeHtml(initial);
+      if (isSafeAvatarSrc(photoBase64)) {
+        return '<div class="avatar ' + escapeAttr(sizeClass) + '"><img src="' + escapeAttr(photoBase64) + '" alt="avatar" onerror="this.parentElement.textContent=\'' + escapeJsString(initial) + '\'"></div>';
+      }
+      return '<div class="avatar ' + escapeAttr(sizeClass) + '">' + safeInitial + '</div>';
+    }
+
+    function renderUserInfo(user, showId) {
+      showId = showId !== false;
+      var name = ((user.first_name || '') + ' ' + (user.last_name || '')).trim() || '未知用户';
+      var username = user.username ? '@' + user.username : '';
+      var userId = user.user_id || user.id || '';
+      
+      return '<div class="flex items-center gap-3">' +
+        renderAvatar(user.photo_base64, name) +
+        '<div class="min-w-0 flex-1">' +
+          '<div class="font-medium truncate">' + escapeHtml(name) + '</div>' +
+          '<div class="text-xs text-gray-400 flex flex-wrap gap-2">' +
+            (username ? '<span class="user-tag">' + escapeHtml(username) + '</span>' : '') +
+            (showId && userId ? '<span>ID: ' + escapeHtml(userId) + '</span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    function escapeHtml(text) {
+      if (text === undefined || text === null) return '';
+      var div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function escapeAttr(text) {
+      return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function escapeJsString(text) {
+      return String(text === undefined || text === null ? '' : text)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/</g, '\\x3c')
+        .replace(/>/g, '\\x3e');
+    }
+
+    function isSafeAvatarSrc(src) {
+      return typeof src === 'string' && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(src);
+    }
+
+    function encodeQuery(params) {
+      var pairs = [];
+      Object.keys(params || {}).forEach(function(key) {
+        var value = params[key];
+        if (value !== undefined && value !== null && value !== '') {
+          pairs.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
+        }
+      });
+      return pairs.length ? '?' + pairs.join('&') : '';
+    }
+
+    function isValidNumericId(value) {
+      return /^-?\d{1,32}$/.test(String(value || '').trim());
+    }
+
+    // ==================== API 调用 ====================
+    async function api(path, options) {
+      options = options || {};
+      var headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      
+      try {
+        var res = await fetch('/api' + path, Object.assign({}, options, { headers: headers }));
+        var data = null;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = { error: '服务器返回格式错误' };
+        }
+        if (!res.ok) {
+          var message = (data && data.error) || '请求失败';
+          if (res.status === 401 || res.status === 403) {
+            showError('权限验证失败', message, data && data.userId ? 'ID: ' + data.userId : '');
+          } else {
+            showToast(message, 'error');
+          }
+          return null;
+        }
+        if (data && data.error) {
+          showToast(data.error, 'error');
+          return null;
+        }
+        return data;
+      } catch (e) {
+        console.error('API Error:', e);
+        showToast('网络错误，请重试', 'error');
+        return null;
+      }
+    }
+
+    // ==================== 页面切换 ====================
+    function showPage(pageId) {
+      document.querySelectorAll('.page').forEach(function(page) {
+        page.classList.add('hidden');
+      });
+      document.getElementById(pageId).classList.remove('hidden');
+    }
+
+    // ==================== 显示错误页面 ====================
+    function showError(title, message, details) {
+      document.getElementById('errorTitle').textContent = title || '访问被拒绝';
+      document.getElementById('errorMessage').textContent = message || '请在 Telegram 中打开此页面';
+      document.getElementById('errorDetails').textContent = details || '';
+      showPage('errorPage');
+    }
+
+    // ==================== 重试认证 ====================
+    async function retryAuth() {
+      showPage('loadingPage');
+      await init();
+    }
+
+    // ==================== 认证 ====================
+    async function init() {
+      document.getElementById('loadingStatus').textContent = '正在初始化...';
+      
+      // 检查是否在 Telegram WebApp 中打开
+      if (typeof Telegram === 'undefined' || !Telegram.WebApp) {
+        showError('环境错误', '无法加载 Telegram WebApp SDK', '请确保在 Telegram 中打开');
+        return;
+      }
+      
+      tg = Telegram.WebApp;
+      
+      // 初始化 WebApp
+      tg.ready();
+      tg.expand();
+      
+      // 设置主题颜色
+      if (tg.colorScheme === 'dark') {
+        document.body.style.backgroundColor = tg.backgroundColor || '#1a1a2e';
+      }
+      
+      // 检查 initData
+      if (!tg.initData || tg.initData === '') {
+        showError('认证数据缺失', '无法获取 Telegram 认证数据', '请通过 Bot 菜单按钮打开此页面');
+        return;
+      }
+      
+      document.getElementById('loadingStatus').textContent = '正在验证身份...';
+      
+      try {
+        // 先获取权限配置
+        var config = await api('/permissions/config');
+        if (config) {
+          permissionConfig = config;
+        }
+        
+        var auth = await api('/auth', {
+          method: 'POST',
+          body: JSON.stringify({ initData: tg.initData })
+        });
+        
+        if (!auth) {
+          // 错误已在 api 函数中处理
+          return;
+        }
+        
+        if (auth.error) {
+          var details = '';
+          if (auth.code === 'NOT_ADMIN') {
+            details = '您的用户 ID: ' + (auth.userId || '未知');
+          } else if (auth.code === 'INVALID_SIGNATURE') {
+            details = '请重新通过 Bot 打开此页面';
+          }
+          showError('认证失败', auth.error, details);
+          return;
+        }
+        
+        if (auth.token) {
+          token = auth.token;
+          currentUser = {
+            // 确保所有用户字段都被正确设置
+            id: auth.user.id,
+            user_id: auth.user.id.toString(), // 统一使用字符串格式
+            username: auth.user.username,
+            first_name: auth.user.first_name,
+            last_name: auth.user.last_name,
+            is_super: auth.is_super,
+            permissions: auth.permissions,
+            group_ids: auth.group_ids || auth.user.group_ids || null,
+            is_global_admin: auth.is_global_admin || auth.user.is_global_admin || false
+          };
+          appState.currentUser = currentUser;
+          showMainPage();
+        } else {
+          showError('认证失败', '服务器未返回有效令牌');
+        }
+      } catch (e) {
+        console.error('Init error:', e);
+        showError('认证异常', e.message);
+      }
+    }
+
+    function showMainPage() {
+      showPage('mainPage');
+      
+      if (currentUser) {
+        // 统一获取用户名
+        var firstName = currentUser.first_name || '';
+        var lastName = currentUser.last_name || '';
+        var username = currentUser.username || '';
+        var displayName = '';
+        
+        if (firstName || lastName) {
+          displayName = (firstName + ' ' + lastName).trim();
+        } else if (username) {
+          displayName = username;
+        } else {
+          displayName = '管理员';
+        }
+        
+        document.getElementById('currentUser').textContent = displayName ? '欢迎, ' + displayName : '群组管理系统';
+        
+        // 显示用户角色
+        var roleText = currentUser.is_super ? '👑 超级管理员' : '👤 普通管理员';
+        document.getElementById('userRole').textContent = roleText;
+        if (currentUser.is_super) {
+          document.getElementById('userRole').className = 'text-xs px-2 py-1 rounded bg-yellow-500/20';
+        } else {
+          document.getElementById('userRole').className = 'text-xs px-2 py-1 rounded bg-blue-500/20';
+        }
+      }
+      
+      // 根据权限动态生成标签页
+      generateTabs();
+      switchTab('dashboard');
+    }
+
+    // 生成标签页（根据权限）
+    function generateTabs() {
+      var tabsContainer = document.getElementById('tabsContainer');
+      var html = '';
+      
+      // 控制面板（所有管理员都能访问）
+      html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="dashboard" onclick="switchTab(\'dashboard\')">📊 控制面板</button>';
+      
+      // 群组管理
+      if (checkPermission('view_groups')) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="groups" onclick="switchTab(\'groups\')">👥 群组管理</button>';
+      }
+      
+      // 封禁管理
+      if (checkPermission('view_bans')) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="bans" onclick="switchTab(\'bans\')">🚫 封禁管理</button>';
+      }
+      
+      // 白名单
+      if (checkPermission('view_whitelist')) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="whitelist" onclick="switchTab(\'whitelist\')">✅ 白名单</button>';
+      }
+      
+      // 管理员管理（仅超级管理员）
+      if (currentUser.is_super) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="admins" onclick="switchTab(\'admins\')">👑 管理员</button>';
+      }
+      
+      // 通知设置
+      if (checkPermission('view_notifications')) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="notifications" onclick="switchTab(\'notifications\')">🔔 通知设置</button>';
+      }
+      
+      // 违禁词
+      if (checkPermission('view_banwords')) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="banwords" onclick="switchTab(\'banwords\')">📝 违禁词</button>';
+      }
+      
+      // 系统日志
+      if (checkPermission('view_logs')) {
+        html += '<button class="tab px-4 py-2 rounded-lg whitespace-nowrap glass" data-tab="logs" onclick="switchTab(\'logs\')">📋 系统日志</button>';
+      }
+      
+      tabsContainer.innerHTML = html;
+    }
+
+    // ==================== 标签页切换 ====================
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tab').forEach(function(t) {
+        t.classList.remove('tab-active');
+        if (t.dataset.tab === tab) t.classList.add('tab-active');
+      });
+      loadTabContent();
+    }
+
+    async function loadTabContent() {
+      var content = document.getElementById('content');
+      
+      // 显示加载状态
+      content.innerHTML = '<div class="text-center py-10"><div class="loading-spinner"></div><div class="mt-2 text-gray-400">加载中...</div></div>';
+      
+      try {
+        switch (currentTab) {
+          case 'dashboard': await loadDashboard(); break;
+          case 'groups': await loadGroups(); break;
+          case 'bans': await loadBans(); break;
+          case 'whitelist': await loadWhitelist(); break;
+          case 'admins': await loadAdmins(); break;
+          case 'notifications': await loadNotifications(); break;
+          case 'banwords': await loadBanwords(); break;
+          case 'logs': await loadLogs(); break;
+        }
+        content.classList.add('fade-update');
+        setTimeout(function() { content.classList.remove('fade-update'); }, 300);
+      } catch (e) {
+        console.error('Load error:', e);
+        content.innerHTML = '<div class="text-center py-10 text-red-400">加载失败: ' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    // 手动刷新
+    async function manualRefresh() {
+      var btn = document.getElementById('refreshBtn');
+      var originalHtml = btn.innerHTML;
+      btn.innerHTML = '<div class="loading-spinner"></div>';
+      
+      // 清除当前标签页的缓存
+      dataCache.clear(currentTab);
+      if (currentTab === 'bans') dataCache.clear('groups');
+      if (currentTab === 'whitelist') dataCache.clear('groups');
+      if (currentTab === 'notifications') dataCache.clear('groups');
+      
+      await loadTabContent();
+      
+      btn.innerHTML = originalHtml;
+      showToast('数据已刷新');
+    }
+
+    // ==================== 控制面板 ====================
+    async function loadDashboard() {
+      var stats = await dataCache.fetch('stats', '/stats');
+      if (!stats) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var content = document.getElementById('content');
+      
+      // 显示当前用户权限
+      var permissionsHtml = '';
+      if (currentUser.permissions && currentUser.permissions.length > 0) {
+        permissionsHtml = '<div class="mt-2"><div class="text-xs text-gray-400 mb-1">您的权限:</div><div class="flex flex-wrap gap-1">';
+        currentUser.permissions.forEach(function(p) {
+          permissionsHtml += '<span class="permission-tag">' + escapeHtml(p) + '</span>';
+        });
+        permissionsHtml += '</div></div>';
+      }
+      
+      content.innerHTML = 
+        '<div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">👥</div>' +
+            '<div class="text-2xl font-bold">' + (stats.groups || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">群组数量</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">🚫</div>' +
+            '<div class="text-2xl font-bold">' + (stats.bans || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">封禁记录</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">✅</div>' +
+            '<div class="text-2xl font-bold">' + (stats.whitelist || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">白名单</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">👑</div>' +
+            '<div class="text-2xl font-bold">' + (stats.admins || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">管理员</div>' +
+            '<div class="text-xs text-gray-500">超管:' + (stats.superAdminCount || 0) + ' 普通:' + (stats.dbAdminCount || 0) + '</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">📝</div>' +
+            '<div class="text-2xl font-bold">' + (stats.banWords || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">违禁词</div>' +
+          '</div>' +
+          '<div class="stat-card card p-4 text-center">' +
+            '<div class="text-3xl mb-2">📋</div>' +
+            '<div class="text-2xl font-bold">' + (stats.logs || 0) + '</div>' +
+            '<div class="text-gray-400 text-sm">日志记录</div>' +
+          '</div>' +
+        '</div>' +
+        
+        (currentUser.is_super ? 
+          '<div class="card p-4 mb-4">' +
+            '<h3 class="font-bold mb-3">🔗 Webhook 状态</h3>' +
+            '<div class="text-sm">' +
+              '<div class="flex justify-between py-2 border-b border-white/10">' +
+                '<span class="text-gray-400">状态</span>' +
+                '<span>' + (stats.webhook && stats.webhook.url ? '✅ 已连接' : '❌ 未设置') + '</span>' +
+              '</div>' +
+              (stats.webhook && stats.webhook.url ? 
+                '<div class="flex justify-between py-2 border-b border-white/10">' +
+                  '<span class="text-gray-400">URL</span>' +
+                  '<span class="text-xs truncate max-w-[200px]">' + stats.webhook.url + '</span>' +
+                '</div>' +
+                '<div class="flex justify-between py-2">' +
+                  '<span class="text-gray-400">待处理更新</span>' +
+                  '<span>' + (stats.webhook.pending_update_count || 0) + '</span>' +
+                '</div>' : '') +
+            '</div>' +
+            '<button onclick="showSetWebhookModal()" class="btn-primary w-full py-2 rounded-lg mt-3">设置 Webhook</button>' +
+          '</div>' : '') +
+        
+        '<div class="card p-4">' +
+          '<h3 class="font-bold mb-3">⚙️ 快捷操作</h3>' +
+          '<div class="grid grid-cols-2 gap-3">' +
+            (checkPermission('view_groups') ? 
+              '<button onclick="switchTab(\'groups\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+                '<div class="text-2xl mb-1">➕</div>' +
+                '<div class="text-sm">' + (checkPermission('manage_groups') ? '管理群组' : '查看群组') + '</div>' +
+              '</button>' : '') +
+            (checkPermission('view_whitelist') ? 
+              '<button onclick="switchTab(\'whitelist\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+                '<div class="text-2xl mb-1">📋</div>' +
+                '<div class="text-sm">' + (checkPermission('manage_whitelist') ? '管理白名单' : '查看白名单') + '</div>' +
+              '</button>' : '') +
+            (checkPermission('view_banwords') ? 
+              '<button onclick="switchTab(\'banwords\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+                '<div class="text-2xl mb-1">📝</div>' +
+                '<div class="text-sm">' + (checkPermission('manage_banwords') ? '管理违禁词' : '查看违禁词') + '</div>' +
+              '</button>' : '') +
+            (checkPermission('view_logs') ? 
+              '<button onclick="switchTab(\'logs\')" class="glass p-3 rounded-lg text-center hover:bg-white/10">' +
+                '<div class="text-2xl mb-1">📊</div>' +
+                '<div class="text-sm">查看日志</div>' +
+              '</button>' : '') +
+          '</div>' +
+          permissionsHtml +
+        '</div>';
+    }
+
+    // ==================== 群组管理 ====================
+    async function loadGroups() {
+      if (!checkPermission('view_groups')) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups');
+      if (!groups) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var content = document.getElementById('content');
+      
+      var html = '<div class="flex justify-between items-center mb-4">' +
+        '<h2 class="text-lg font-bold">群组管理</h2>';
+      
+      if (checkPermission('manage_groups')) {
+        html += '<button onclick="showAddGroupModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加群组</button>';
+      }
+      
+      html += '</div><div class="space-y-3">';
+      
+      if (groups.length === 0) {
+        html += '<div class="text-center py-10 text-gray-400">暂无群组，请先将Bot添加到群组</div>';
+      } else {
+        for (var i = 0; i < groups.length; i++) {
+          var g = groups[i];
+          var groupIdArg = escapeJsString(g.id);
+          html += '<div class="card p-4">' +
+            '<div class="flex items-center gap-3 mb-3">' +
+              renderAvatar(g.photo_base64, g.title, 'lg') +
+              '<div class="flex-1 min-w-0">' +
+                '<div class="font-bold truncate">' + escapeHtml(g.title || '未知群组') + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (g.username ? '<span class="user-tag">@' + escapeHtml(g.username) + '</span> ' : '') +
+                  'ID: ' + escapeHtml(g.id) +
+                '</div>' +
+              '</div>' +
+              (checkPermission('manage_groups') ? 
+                '<button onclick="refreshGroup(\'' + groupIdArg + '\')" class="p-2 rounded-lg glass hover:bg-white/10 text-sm" title="刷新群组信息">🔄</button>' : '') +
+            '</div>';
+          
+          if (checkPermission('manage_groups')) {
+            html += '<div class="grid grid-cols-2 gap-2 text-sm mb-3">' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">防广告</span>' +
+                '<div class="switch ' + (g.anti_ad ? 'on' : '') + '" onclick="toggleGroupSetting(\'' + groupIdArg + '\', \'anti_ad\', ' + (!g.anti_ad) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">检查消息</span>' +
+                '<div class="switch ' + (g.check_messages ? 'on' : '') + '" onclick="toggleGroupSetting(\'' + groupIdArg + '\', \'check_messages\', ' + (!g.check_messages) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">中文名</span>' +
+                '<div class="switch ' + (g.require_chinese_name ? 'on' : '') + '" onclick="toggleGroupSetting(\'' + groupIdArg + '\', \'require_chinese_name\', ' + (!g.require_chinese_name) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">头像</span>' +
+                '<div class="switch ' + (g.require_avatar ? 'on' : '') + '" onclick="toggleGroupSetting(\'' + groupIdArg + '\', \'require_avatar\', ' + (!g.require_avatar) + ')"></div>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">封禁</span>' +
+                '<select onchange="updateBanDuration(\'' + groupIdArg + '\', this.value, this)" class="px-2 py-1 rounded text-xs">' +
+                  '<option value="1h"' + (g.ban_duration === '1h' ? ' selected' : '') + '>1小时</option>' +
+                  '<option value="24h"' + (g.ban_duration === '24h' ? ' selected' : '') + '>24小时</option>' +
+                  '<option value="7d"' + (g.ban_duration === '7d' ? ' selected' : '') + '>7天</option>' +
+                  '<option value="forever"' + (g.ban_duration === 'forever' ? ' selected' : '') + '>永久</option>' +
+                '</select>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">违规处理</span>' +
+                '<select onchange="updateMessageAction(\'' + groupIdArg + '\', this.value, this)" class="px-2 py-1 rounded text-xs">' +
+                  '<option value="delete"' + (g.action_on_message === 'delete' ? ' selected' : '') + '>仅删除</option>' +
+                  '<option value="delete_ban"' + (g.action_on_message === 'delete_ban' ? ' selected' : '') + '>删除并封禁</option>' +
+                  '<option value="mute"' + (g.action_on_message === 'mute' ? ' selected' : '') + '>删除并禁言</option>' +
+                  '<option value="warn"' + (g.action_on_message === 'warn' ? ' selected' : '') + '>删除并警告</option>' +
+                '</select>' +
+              '</div>' +
+              '<div class="flex justify-between items-center">' +
+                '<span class="text-gray-400">禁言时长(分)</span>' +
+                '<input type="number" value="' + escapeAttr(g.mute_duration || 10) + '" min="1" max="1440" onchange="updateMuteDuration(\'' + groupIdArg + '\', this.value, this)" class="w-16 px-2 py-1 rounded text-xs">' +
+              '</div>' +
+            '</div>' +
+            '<button onclick="deleteGroup(\'' + groupIdArg + '\')" class="btn-danger w-full py-2 rounded-lg text-sm">删除群组</button>';
+          }
+          
+          html += '</div>';
+        }
+      }
+      
+      html += '</div>';
+      content.innerHTML = html;
+    }
+
+    async function refreshGroup(groupId) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      showToast('正在刷新...');
+      var result = await api('/groups/' + groupId + '/refresh', { method: 'POST' });
+      if (!result) return;
+      dataCache.clear('groups');
+      await loadGroups();
+      showToast('群组信息已更新');
+    }
+
+    async function toggleGroupSetting(groupId, setting, value) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var groups = dataCache.get('groups') || [];
+      var group = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].id === groupId) {
+          group = groups[i];
+          break;
+        }
+      }
+      if (!group) return;
+      
+      var data = {
+        anti_ad: group.anti_ad,
+        check_messages: group.check_messages,
+        require_chinese_name: group.require_chinese_name,
+        require_avatar: group.require_avatar,
+        ban_duration: group.ban_duration,
+        action_on_message: group.action_on_message,
+        mute_duration: group.mute_duration
+      };
+      data[setting] = value ? 1 : 0;
+      
+      var result = await api('/groups/' + groupId, { method: 'PUT', body: JSON.stringify(data) });
+      if (!result) return;
+      showToast('设置已更新');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    async function updateBanDuration(groupId, duration, control) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var groups = dataCache.get('groups') || [];
+      var group = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].id === groupId) {
+          group = groups[i];
+          break;
+        }
+      }
+      if (!group) return;
+      
+      var result = await api('/groups/' + groupId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          anti_ad: group.anti_ad,
+          check_messages: group.check_messages,
+          require_chinese_name: group.require_chinese_name,
+          require_avatar: group.require_avatar,
+          ban_duration: duration,
+          action_on_message: group.action_on_message,
+          mute_duration: group.mute_duration
+        })
+      });
+      if (!result) {
+        if (control) control.value = group.ban_duration || '24h';
+        return;
+      }
+      showToast('封禁时长已更新');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    // 新增：更新消息处理方式
+    async function updateMessageAction(groupId, action, control) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var groups = dataCache.get('groups') || [];
+      var group = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].id === groupId) {
+          group = groups[i];
+          break;
+        }
+      }
+      if (!group) return;
+      
+      var result = await api('/groups/' + groupId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          anti_ad: group.anti_ad,
+          check_messages: group.check_messages,
+          require_chinese_name: group.require_chinese_name,
+          require_avatar: group.require_avatar,
+          ban_duration: group.ban_duration,
+          action_on_message: action,
+          mute_duration: group.mute_duration
+        })
+      });
+      if (!result) {
+        if (control) control.value = group.action_on_message || 'delete';
+        return;
+      }
+      showToast('消息处理方式已更新');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    // 新增：更新禁言时长
+    async function updateMuteDuration(groupId, duration, control) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var groups = dataCache.get('groups') || [];
+      var group = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].id === groupId) {
+          group = groups[i];
+          break;
+        }
+      }
+      if (!group) return;
+
+      var durationNum = parseInt(duration);
+      if (isNaN(durationNum) || durationNum < 1 || durationNum > 1440) {
+        if (control) control.value = group.mute_duration || 10;
+        showToast('请输入1-1440之间的数字', 'error');
+        return;
+      }
+      
+      var result = await api('/groups/' + groupId, {
+        method: 'PUT',
+        body: JSON.stringify({
+          anti_ad: group.anti_ad,
+          check_messages: group.check_messages,
+          require_chinese_name: group.require_chinese_name,
+          require_avatar: group.require_avatar,
+          ban_duration: group.ban_duration,
+          action_on_message: group.action_on_message,
+          mute_duration: durationNum
+        })
+      });
+      if (!result) {
+        if (control) control.value = group.mute_duration || 10;
+        return;
+      }
+      showToast('禁言时长已更新');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    async function deleteGroup(groupId) {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      if (!await confirmAction({ title: '删除群组', message: '此操作会从面板移除此群组配置。', requireText: 'DELETE' })) return;
+      var result = await api('/groups/' + groupId, { method: 'DELETE' });
+      if (!result) return;
+      showToast('群组已删除');
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    function showAddGroupModal() {
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加群组</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">群组 ID</label>' +
+            '<input type="text" id="newGroupId" placeholder="例如: -1001234567890" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div class="text-xs text-gray-400">' +
+            '提示：需要先将 Bot 添加为群组管理员' +
+          '</div>' +
+          '<button onclick="addGroup()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
+    }
+
+    async function addGroup() {
+      if (!checkPermission('manage_groups')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var groupId = document.getElementById('newGroupId').value.trim();
+      if (!groupId) return showToast('请输入群组ID', 'error');
+      if (!isValidNumericId(groupId)) return showToast('群组ID格式错误', 'error');
+      
+      var result = await api('/groups', { method: 'POST', body: JSON.stringify({ groupId: groupId }) });
+      if (!result) return;
+      showToast('群组添加成功');
+      closeModal();
+      dataCache.clear('groups');
+      await loadGroups();
+    }
+
+    // ==================== 封禁管理 ====================
+    async function loadBans() {
+      if (!checkPermission('view_bans')) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+      
+      var bans = await dataCache.fetch('bans', '/bans');
+      if (!bans) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups') || [];
+      var content = document.getElementById('content');
+      
+      var html = '<div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">' +
+        '<input type="text" id="banSearch" placeholder="搜索用户ID/用户名..." class="px-4 py-2 rounded-lg" onkeyup="debounceSearch(searchBans)">' +
+        '<select id="banGroupFilter" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
+          '<option value="">所有群组</option>';
+      
+      for (var i = 0; i < groups.length; i++) {
+        html += '<option value="' + escapeAttr(groups[i].id) + '">' + escapeHtml(groups[i].title) + '</option>';
+      }
+      
+      html += '</select>' +
+        '<input type="date" id="banDateFrom" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
+        '<input type="date" id="banDateTo" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
+        '<button onclick="filterBans()" class="btn-primary px-4 py-2 rounded-lg">筛选</button>' +
+        '</div><div id="bansList" class="space-y-3">' + renderBansList(bans, groups) + '</div>';
+      content.innerHTML = html;
+    }
+
+    function renderBansList(bans, groups) {
+      if (bans.length === 0) return '<div class="text-center py-10 text-gray-400">暂无封禁记录</div>';
+      
+      var grouped = {};
+      for (var i = 0; i < bans.length; i++) {
+        var b = bans[i];
+        var key = b.group_id;
+        if (!grouped[key]) grouped[key] = { title: b.group_title || b.group_id, photo: b.group_photo, bans: [] };
+        grouped[key].bans.push(b);
+      }
+      
+      var html = '';
+      var keys = Object.keys(grouped);
+      for (var j = 0; j < keys.length; j++) {
+        var groupId = keys[j];
+        var data = grouped[groupId];
+        html += '<div class="card p-4">' +
+          '<h3 class="font-bold mb-3 flex items-center gap-2">' +
+            renderAvatar(data.photo, data.title) +
+            '<span>' + escapeHtml(data.title) + '</span>' +
+            '<span class="text-xs text-gray-400">(' + data.bans.length + ')</span>' +
+          '</h3>' +
+          '<div class="space-y-2">';
+        
+        for (var k = 0; k < data.bans.length; k++) {
+          var b = data.bans[k];
+          var name = ((b.first_name || '') + ' ' + (b.last_name || '')).trim() || '未知';
+          var banGroupIdArg = escapeJsString(b.group_id);
+          var banUserIdArg = escapeJsString(b.user_id);
+          html += '<div class="glass p-3 rounded-lg">' +
+            '<div class="flex justify-between items-start mb-2">' +
+              '<div class="flex items-center gap-3">' +
+                renderAvatar(b.photo_base64, name) +
+                '<div>' +
+                  '<div class="font-medium">' + escapeHtml(name) + '</div>' +
+                  '<div class="text-xs text-gray-400">' +
+                    (b.username ? '<span class="user-tag">@' + escapeHtml(b.username) + '</span> ' : '') +
+                    'ID: ' + escapeHtml(b.user_id) +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="flex gap-2">' +
+                (checkPermission('manage_bans') ? 
+                  '<button onclick="unbanUser(\'' + banGroupIdArg + '\', \'' + banUserIdArg + '\')" class="btn-success px-2 py-1 rounded text-xs">解封</button>' : '') +
+                (checkPermission('manage_bans') ? 
+                  '<button onclick="deleteBan(' + b.id + ')" class="btn-danger px-2 py-1 rounded text-xs">删除</button>' : '') +
+              '</div>' +
+            '</div>' +
+            '<div class="text-xs text-gray-400">' +
+              '<div>原因: ' + escapeHtml(b.reason || '未知') + '</div>' +
+              '<div>时间: ' + escapeHtml(b.banned_at || '') + '</div>' +
+            '</div>' +
+          '</div>';
+        }
+        
+        html += '</div></div>';
+      }
+      
+      return html;
+    }
+
+    var searchTimer = null;
+    function debounceSearch(fn) {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(fn, 300);
+    }
+
+    async function searchBans() {
+      if (!checkPermission('view_bans')) return;
+      
+      var search = document.getElementById('banSearch').value;
+      var groupId = document.getElementById('banGroupFilter').value;
+      var dateFrom = document.getElementById('banDateFrom').value;
+      var dateTo = document.getElementById('banDateTo').value;
+      var bans = await api('/bans' + encodeQuery({ search: search, group_id: groupId, date_from: dateFrom, date_to: dateTo }));
+      if (!bans) return;
+      var groups = dataCache.get('groups') || [];
+      document.getElementById('bansList').innerHTML = renderBansList(bans, groups);
+    }
+
+    async function filterBans() {
+      await searchBans();
+    }
+
+    async function unbanUser(groupId, userId) {
+      if (!checkPermission('manage_bans')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var result = await api('/bans/unban', { method: 'POST', body: JSON.stringify({ groupId: groupId, userId: userId }) });
+      if (!result) return;
+      showToast('用户已解封');
+      dataCache.clear('bans');
+      await loadBans();
+    }
+
+    async function deleteBan(banId) {
+      if (!checkPermission('manage_bans')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      if (!await confirmAction({ title: '删除封禁记录', message: '确定要删除此封禁记录吗？' })) return;
+      var result = await api('/bans/' + banId, { method: 'DELETE' });
+      if (!result) return;
+      showToast('记录已删除');
+      dataCache.clear('bans');
+      await loadBans();
+    }
+
+    // ==================== 白名单管理 ====================
+    function renderWhitelistItem(w) {
+      var meta = (w.group_title ? '群组: ' + escapeHtml(w.group_title) : '全局白名单') +
+        (w.note ? '<br>备注: ' + escapeHtml(w.note) : '');
+      var actions = checkPermission('manage_whitelist') ?
+        '<button onclick="deleteWhitelist(\'' + escapeJsString(w.id) + '\')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' : '';
+      return '<div class="card p-4">' + renderUserCard(w, actions, {
+        fallbackName: '用户 ' + (w.user_id || ''),
+        meta: meta
+      }) + '</div>';
+    }
+
+    async function loadWhitelist() {
+      if (!checkPermission('view_whitelist')) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+      
+      var whitelist = await dataCache.fetch('whitelist', '/whitelist');
+      if (!whitelist) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups') || [];
+      var content = document.getElementById('content');
+      
+      var html = '<div class="flex flex-col md:flex-row gap-4 mb-4">' +
+        '<input type="text" id="whitelistSearch" placeholder="搜索..." class="flex-1 px-4 py-2 rounded-lg" onkeyup="debounceSearch(searchWhitelist)">';
+      
+      if (checkPermission('manage_whitelist')) {
+        html += '<button onclick="showAddWhitelistModal()" class="btn-primary px-4 py-2 rounded-lg">➕ 添加</button>' +
+                '<button onclick="showBatchImportModal()" class="btn-success px-4 py-2 rounded-lg">📥 批量导入</button>';
+      }
+      
+      html += '</div><div id="whitelistList" class="grid gap-3 md:grid-cols-2"></div>';
+      html += '</div>';
+      content.innerHTML = html;
+      renderList('whitelistList', whitelist, renderWhitelistItem, {
+        emptyHtml: '<div class="text-center py-10 text-gray-400 col-span-2">暂无白名单用户</div>'
+      });
+    }
+
+    async function searchWhitelist() {
+      if (!checkPermission('view_whitelist')) return;
+      
+      var search = document.getElementById('whitelistSearch').value;
+      var whitelist = await api('/whitelist?search=' + encodeURIComponent(search));
+      if (!whitelist) return;
+      
+      renderList('whitelistList', whitelist, renderWhitelistItem, {
+        emptyHtml: '<div class="text-center py-10 text-gray-400 col-span-2">无匹配结果</div>'
+      });
+    }
+
+    function showAddWhitelistModal() {
+      if (!checkPermission('manage_whitelist')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+
+      var allowGlobal = canUseGlobalScope();
+      var groupLabel = allowGlobal ? '适用群组（留空为全局）' : '适用群组';
+      var initialGroupOption = allowGlobal ? '<option value="">全局</option>' : '';
+      
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加白名单</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">用户 ID</label>' +
+            '<input type="text" id="wlUserId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">' + groupLabel + '</label>' +
+            '<select id="wlGroupId" class="w-full px-4 py-2 rounded-lg">' +
+              initialGroupOption +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">备注</label>' +
+            '<input type="text" id="wlNote" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<button onclick="addWhitelist()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
+      loadGroupsForSelect('wlGroupId', { includeGlobal: allowGlobal });
+    }
+
+    function showBatchImportModal() {
+      if (!checkPermission('manage_whitelist')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+
+      var allowGlobal = canUseGlobalScope();
+      var groupLabel = allowGlobal ? '适用群组（留空为全局）' : '适用群组';
+      var initialGroupOption = allowGlobal ? '<option value="">全局</option>' : '';
+      
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">批量导入白名单</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">用户ID列表（每行一个）</label>' +
+            '<textarea id="batchUserIds" rows="8" class="w-full px-4 py-2 rounded-lg" placeholder="123456789&#10;987654321"></textarea>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">' + groupLabel + '</label>' +
+            '<select id="batchGroupId" class="w-full px-4 py-2 rounded-lg">' +
+              initialGroupOption +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">统一备注</label>' +
+            '<input type="text" id="batchNote" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<button onclick="batchImportWhitelist()" class="btn-primary w-full py-2 rounded-lg">导入</button>' +
+        '</div>'
+      );
+      loadGroupsForSelect('batchGroupId', { includeGlobal: allowGlobal });
+    }
+
+    async function loadGroupsForSelect(selectId, options) {
+      options = options || {};
+      var includeGlobal = options.includeGlobal;
+      if (includeGlobal === undefined) includeGlobal = canUseGlobalScope();
+      var groups = dataCache.get('groups') || [];
+      var select = document.getElementById(selectId);
+      if (!select) return;
+
+      select.innerHTML = '';
+      if (includeGlobal) {
+        var globalOption = document.createElement('option');
+        globalOption.value = '';
+        globalOption.textContent = '全局';
+        select.appendChild(globalOption);
+      }
+      
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        var option = document.createElement('option');
+        option.value = g.id;
+        option.textContent = g.title;
+        select.appendChild(option);
+      }
+
+      if (!includeGlobal && groups.length === 0) {
+        var emptyOption = document.createElement('option');
+        emptyOption.value = '';
+        emptyOption.textContent = '暂无可管理群组';
+        emptyOption.disabled = true;
+        emptyOption.selected = true;
+        select.appendChild(emptyOption);
+      }
+    }
+
+    async function addWhitelist() {
+      if (!checkPermission('manage_whitelist')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var userId = document.getElementById('wlUserId').value.trim();
+      var groupId = document.getElementById('wlGroupId').value;
+      var note = document.getElementById('wlNote').value.trim();
+      
+      if (!userId) return showToast('请输入用户ID', 'error');
+      if (!isValidNumericId(userId)) return showToast('用户ID格式错误', 'error');
+      if (!canUseGlobalScope() && !groupId) return showToast('请选择群组', 'error');
+      
+      var result = await api('/whitelist', { method: 'POST', body: JSON.stringify({ userId: userId, groupId: groupId, note: note }) });
+      if (!result) return;
+      showToast('添加成功');
+      closeModal();
+      dataCache.clear('whitelist');
+      await loadWhitelist();
+    }
+
+    async function batchImportWhitelist() {
+      if (!checkPermission('manage_whitelist')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var userIds = document.getElementById('batchUserIds').value.trim();
+      var groupId = document.getElementById('batchGroupId').value;
+      var note = document.getElementById('batchNote').value.trim();
+      
+      if (!userIds) return showToast('请输入用户ID', 'error');
+      var invalid = userIds.split(/[\n,]/).map(function(id) { return id.trim(); }).filter(Boolean).filter(function(id) { return !isValidNumericId(id); });
+      if (invalid.length > 0) return showToast('存在格式错误的用户ID: ' + invalid[0], 'error');
+      if (!canUseGlobalScope() && !groupId) return showToast('请选择群组', 'error');
+      
+      showToast('正在导入...');
+      var result = await api('/whitelist', { method: 'POST', body: JSON.stringify({ userIds: userIds, groupId: groupId, note: note }) });
+      if (!result) return;
+      showToast('导入成功');
+      closeModal();
+      dataCache.clear('whitelist');
+      await loadWhitelist();
+    }
+
+    async function deleteWhitelist(id) {
+      if (!checkPermission('manage_whitelist')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      if (!await confirmAction({ title: '删除白名单', message: '确定要删除此白名单记录吗？' })) return;
+      var result = await api('/whitelist/' + id, { method: 'DELETE' });
+      if (!result) return;
+      showToast('已删除');
+      dataCache.clear('whitelist');
+      await loadWhitelist();
+    }
+
+    // ==================== 管理员管理（仅超级管理员） ====================
+    async function loadAdmins() {
+      if (!currentUser.is_super) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+      
+      var data = await dataCache.fetch('admins', '/admins');
+      if (!data) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var content = document.getElementById('content');
+      
+      var html = '<div class="flex justify-between items-center mb-4">' +
+        '<h2 class="text-lg font-bold">管理员管理</h2>' +
+        '<button onclick="showAddAdminModal()" class="btn-primary px-4 py-2 rounded-lg text-sm">➕ 添加管理员</button>' +
+      '</div>' +
+      
+      '<div class="card p-4 mb-4">' +
+        '<h3 class="font-bold mb-3">👑 超级管理员 (' + data.superAdmins.length + ')</h3>' +
+        '<div class="space-y-2">';
+      
+      if (data.superAdmins.length === 0) {
+        html += '<div class="text-gray-400">未配置超级管理员</div>';
+      } else {
+        for (var i = 0; i < data.superAdmins.length; i++) {
+          var admin = data.superAdmins[i];
+          var name = ((admin.first_name || '') + ' ' + (admin.last_name || '')).trim() || '超级管理员';
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(admin.photo_base64, name) +
+              '<div>' +
+                '<div class="font-medium">' + escapeHtml(name) + '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (admin.username ? '<span class="user-tag">@' + escapeHtml(admin.username) + '</span> ' : '') +
+                  'ID: ' + escapeHtml(admin.user_id) +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<span class="text-xs text-yellow-400">环境变量配置</span>' +
+          '</div>';
+        }
+      }
+      
+      html += '</div></div>' +
+      
+      '<div class="card p-4">' +
+        '<h3 class="font-bold mb-3">👤 普通管理员 (' + data.admins.length + ')</h3>' +
+        '<div class="space-y-2">';
+      
+      if (data.admins.length === 0) {
+        html += '<div class="text-gray-400">暂无普通管理员</div>';
+      } else {
+        for (var j = 0; j < data.admins.length; j++) {
+          var a = data.admins[j];
+          var aname = ((a.first_name || '') + ' ' + (a.last_name || '')).trim() || '管理员';
+          var permissions = a.permissions ? JSON.parse(a.permissions) : [];
+          
+          html += '<div class="glass p-3 rounded-lg">' +
+            '<div class="flex justify-between items-start mb-2">' +
+              '<div class="flex items-center gap-3">' +
+                renderAvatar(a.photo_base64, aname) +
+                '<div>' +
+                  '<div class="font-medium">' + escapeHtml(aname) + '</div>' +
+                  '<div class="text-xs text-gray-400">' +
+                    (a.username ? '<span class="user-tag">@' + escapeHtml(a.username) + '</span> ' : '') +
+                    'ID: ' + escapeHtml(a.user_id) +
+                  '</div>' +
+                  '<div class="text-xs text-gray-400">' + (a.group_title ? '群组: ' + escapeHtml(a.group_title) : '全局管理员') + '</div>' +
+                  (a.note ? '<div class="text-xs text-blue-400">备注: ' + escapeHtml(a.note) + '</div>' : '') +
+                '</div>' +
+              '</div>' +
+              '<button onclick="deleteAdmin(' + a.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' +
+            '</div>' +
+            '<div class="text-xs">' +
+              '<div class="text-gray-400 mb-1">权限:</div>' +
+              '<div class="flex flex-wrap gap-1">';
+          
+          // 显示权限
+          if (permissions.length > 0) {
+            permissions.forEach(function(p) {
+              html += '<span class="permission-tag">' + escapeHtml(p) + '</span>';
+            });
+          } else {
+            html += '<span class="text-gray-500">无权限</span>';
+          }
+          
+          html += '</div>' +
+                '<button onclick="showEditPermissionsModal(' + a.id + ', \'' + escapeJsString(a.user_id) + '\', \'' + encodeURIComponent(JSON.stringify(permissions)) + '\')" class="text-xs text-blue-400 mt-2">编辑权限</button>' +
+              '</div>' +
+            '</div>';
+        }
+      }
+      
+      html += '</div></div>';
+      content.innerHTML = html;
+    }
+
+    function showAddAdminModal() {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加管理员</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">用户 ID</label>' +
+            '<input type="text" id="adminUserId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">管理群组（留空为全局）</label>' +
+            '<select id="adminGroupId" class="w-full px-4 py-2 rounded-lg">' +
+              '<option value="">全局</option>' +
+            '</select>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">备注</label>' +
+            '<input type="text" id="adminNote" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">权限预设</label>' +
+            '<select id="adminPermissionSet" class="w-full px-4 py-2 rounded-lg" onchange="applyPermissionSet(this.value)">' +
+              '<option value="">选择预设</option>' +
+              '<option value="DEFAULT">默认权限</option>' +
+              '<option value="GROUP_MANAGER">群组管理员</option>' +
+              '<option value="REVIEWER">审核员</option>' +
+              '<option value="VIEWER">观察员</option>' +
+            '</select>' +
+          '</div>' +
+          '<div id="permissionsSelection"></div>' +
+          '<button onclick="addAdmin()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
+      
+      loadGroupsForSelect('adminGroupId');
+      loadPermissionsSelection();
+    }
+
+    function showEditPermissionsModal(adminId, userId, encodedPermissions) {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      // 解码并解析权限
+      var currentPermissions = [];
+      if (encodedPermissions) {
+        try {
+          currentPermissions = JSON.parse(decodeURIComponent(encodedPermissions));
+        } catch (e) {
+          console.error('Parse permissions error:', e);
+          currentPermissions = [];
+        }
+      }
+      
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">编辑权限</h3>' +
+        '<div class="space-y-4">' +
+          '<div class="text-sm text-gray-400">用户 ID: ' + escapeHtml(userId) + '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">权限预设</label>' +
+            '<select id="editPermissionSet" class="w-full px-4 py-2 rounded-lg" onchange="applyEditPermissionSet(this.value)">' +
+              '<option value="">选择预设</option>' +
+              '<option value="DEFAULT">默认权限</option>' +
+              '<option value="GROUP_MANAGER">群组管理员</option>' +
+              '<option value="REVIEWER">审核员</option>' +
+              '<option value="VIEWER">观察员</option>' +
+            '</select>' +
+          '</div>' +
+          '<div id="editPermissionsSelection"></div>' +
+          '<button onclick="updateAdminPermissions(' + adminId + ')" class="btn-primary w-full py-2 rounded-lg">保存权限</button>' +
+        '</div>'
+      );
+      
+      loadEditPermissionsSelection(currentPermissions);
+    }
+
+    function loadPermissionsSelection() {
+      if (!permissionConfig) return;
+      
+      var container = document.getElementById('permissionsSelection');
+      if (!container) return;
+      
+      container.innerHTML = '<div class="text-sm text-gray-400 mb-2">详细权限:</div>' + renderPermissionCheckboxes([], 'permission_');
+    }
+
+    function loadEditPermissionsSelection(currentPermissions) {
+      if (!permissionConfig) return;
+      
+      var container = document.getElementById('editPermissionsSelection');
+      if (!container) return;
+      
+      container.innerHTML = '<div class="text-sm text-gray-400 mb-2">详细权限:</div>' + renderPermissionCheckboxes(currentPermissions, 'edit_permission_');
+    }
+
+    function renderPermissionCheckboxes(selectedPermissions, prefix) {
+      if (!permissionConfig) return '';
+      
+      var permissions = permissionConfig.permissions;
+      var descriptions = permissionConfig.permissionDescriptions;
+      
+      // 分组权限
+      var groups = {
+        '群组管理': ['manage_groups', 'view_groups'],
+        '封禁管理': ['manage_bans', 'view_bans'],
+        '白名单管理': ['manage_whitelist', 'view_whitelist'],
+        '违禁词管理': ['manage_banwords', 'view_banwords'],
+        '通知管理': ['manage_notifications', 'view_notifications'],
+        '日志查看': ['view_logs'],
+        '消息管理': ['manage_messages', 'view_messages'],
+        '管理员管理': ['manage_admins', 'manage_permissions'],
+        '系统管理': ['manage_system', 'view_system']
+      };
+      
+      var html = '';
+      
+      // 普通管理员不能拥有的权限（仅超级管理员）
+      var superAdminOnly = ['manage_admins', 'manage_permissions', 'manage_system'];
+      
+      for (var groupName in groups) {
+        var groupPermissions = groups[groupName];
+        var hasPermissionsInGroup = groupPermissions.some(p => selectedPermissions.includes(p));
+        
+        html += '<div class="permission-group">' +
+                  '<div class="permission-group-title">' + groupName + '</div>';
+        
+        groupPermissions.forEach(function(permission) {
+          var isSuperOnly = superAdminOnly.includes(permission);
+          var isChecked = selectedPermissions.includes(permission);
+          var description = descriptions[permission] || permission;
+          
+          html += '<div class="permission-checkbox ' + (isSuperOnly ? 'admin-only' : '') + '">' +
+                    '<div class="checkbox ' + (isChecked ? 'checked' : '') + '" onclick="toggleCheckbox(this)" data-permission="' + permission + '"></div>' +
+                    '<div class="flex-1">' +
+                      '<div class="text-sm">' + escapeHtml(description) + '</div>' +
+                      '<div class="text-xs text-gray-400">' + permission + '</div>' +
+                    '</div>' +
+                    (isSuperOnly ? '<span class="text-xs text-yellow-400">超管</span>' : '') +
+                  '</div>';
+        });
+        
+        html += '</div>';
+      }
+      
+      return html;
+    }
+
+    function toggleCheckbox(element) {
+      var permission = element.dataset.permission;
+      var isSuperOnly = ['manage_admins', 'manage_permissions', 'manage_system'].includes(permission);
+      
+      if (isSuperOnly && !currentUser.is_super) {
+        showToast('仅超级管理员可分配此权限', 'error');
+        return;
+      }
+      
+      element.classList.toggle('checked');
+    }
+
+    function applyPermissionSet(setName) {
+      if (!permissionConfig || !permissionConfig.permissionSets[setName]) return;
+      
+      var permissions = permissionConfig.permissionSets[setName];
+      var checkboxes = document.querySelectorAll('#permissionsSelection .checkbox');
+      
+      checkboxes.forEach(function(checkbox) {
+        var permission = checkbox.dataset.permission;
+        if (permission && permissions.includes(permission)) {
+          checkbox.classList.add('checked');
+        } else {
+          checkbox.classList.remove('checked');
+        }
+      });
+    }
+
+    function applyEditPermissionSet(setName) {
+      if (!permissionConfig || !permissionConfig.permissionSets[setName]) return;
+      
+      var permissions = permissionConfig.permissionSets[setName];
+      var checkboxes = document.querySelectorAll('#editPermissionsSelection .checkbox');
+      
+      checkboxes.forEach(function(checkbox) {
+        var permission = checkbox.dataset.permission;
+        if (permission && permissions.includes(permission)) {
+          checkbox.classList.add('checked');
+        } else {
+          checkbox.classList.remove('checked');
+        }
+      });
+    }
+
+    function getSelectedPermissions(containerId) {
+      var selected = [];
+      var container = document.getElementById(containerId);
+      if (!container) return selected;
+      
+      var checkboxes = container.querySelectorAll('.checkbox.checked');
+      checkboxes.forEach(function(checkbox) {
+        var permission = checkbox.dataset.permission;
+        if (permission) selected.push(permission);
+      });
+      return selected;
+    }
+
+    async function addAdmin() {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var userId = document.getElementById('adminUserId').value.trim();
+      var groupId = document.getElementById('adminGroupId').value;
+      var note = document.getElementById('adminNote').value.trim();
+      
+      if (!userId) return showToast('请输入用户ID', 'error');
+      if (!isValidNumericId(userId)) return showToast('用户ID格式错误', 'error');
+      
+      // 获取选择的权限
+      var permissions = getSelectedPermissions('permissionsSelection');
+      
+      var result = await api('/admins', { 
+        method: 'POST', 
+        body: JSON.stringify({ 
+          userId: userId, 
+          groupId: groupId, 
+          note: note,
+          permissions: permissions
+        }) 
+      });
+      if (!result) return;
+      showToast('添加成功');
+      closeModal();
+      dataCache.clear('admins');
+      await loadAdmins();
+    }
+
+    async function updateAdminPermissions(adminId) {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      // 获取选择的权限
+      var permissions = getSelectedPermissions('editPermissionsSelection');
+      
+      var result = await api('/admins/' + adminId + '/permissions', { 
+        method: 'PUT', 
+        body: JSON.stringify({ permissions: permissions }) 
+      });
+      if (!result) return;
+      showToast('权限更新成功');
+      closeModal();
+      dataCache.clear('admins');
+      await loadAdmins();
+    }
+
+    async function deleteAdmin(id) {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      if (!await confirmAction({ title: '删除管理员', message: '删除后该用户将失去对应管理权限。', requireText: 'DELETE' })) return;
+      var result = await api('/admins/' + id, { method: 'DELETE' });
+      if (!result) return;
+      showToast('已删除');
+      dataCache.clear('admins');
+      await loadAdmins();
+    }
+
+    // ==================== 通知设置 ====================
+    async function loadNotifications() {
+      if (!checkPermission('view_notifications')) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+      
+      var data = await dataCache.fetch('notifications', '/notifications');
+      if (!data) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+      
+      var groups = await dataCache.fetch('groups', '/groups') || [];
+      var content = document.getElementById('content');
+      
+      var html = '<div class="mb-4">' +
+        '<h2 class="text-lg font-bold">通知设置</h2>' +
+        '<p class="text-sm text-gray-400">管理封禁通知推送设置</p>' +
+      '</div>' +
+      
+      '<div class="card p-4 mb-4">' +
+        '<h3 class="font-bold mb-3">📢 全局通知（所有群组）</h3>' +
+        '<div class="space-y-2">';
+      
+      if (data.admins && data.admins.length > 0) {
+        for (var i = 0; i < data.admins.length; i++) {
+          var admin = data.admins[i];
+          var name = ((admin.first_name || '') + ' ' + (admin.last_name || '')).trim() || '管理员';
+          var canToggle = currentUser.is_super || admin.user_id === getCurrentUserId();
+          
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div class="flex items-center gap-3">' +
+              renderAvatar(admin.photo_base64, name) +
+              '<div>' +
+                '<div class="font-medium">' + escapeHtml(name) + 
+                  (admin.is_super ? ' <span class="text-xs text-yellow-400">(超管)</span>' : '') +
+                  (admin.user_id === getCurrentUserId() ? ' <span class="text-xs text-blue-400">(我)</span>' : '') +
+                '</div>' +
+                '<div class="text-xs text-gray-400">' +
+                  (admin.username ? '<span class="user-tag">@' + escapeHtml(admin.username) + '</span> ' : '') +
+                  'ID: ' + escapeHtml(admin.user_id) +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="switch ' + (admin.enabled ? 'on' : '') + (canToggle ? '' : ' opacity-50 cursor-not-allowed') + '" onclick="' + (canToggle ? 'toggleAdminNotification(\'' + escapeJsString(admin.user_id) + '\', ' + (!admin.enabled) + ', ' + (admin.notification_id || 'null') + ')' : '') + '"></div>' +
+          '</div>';
+        }
+      } else {
+        html += '<div class="text-gray-400">暂无管理员</div>';
+      }
+      
+      html += '</div></div>';
+      
+      // 群组特定通知
+      html += '<div class="card p-4">' +
+        '<h3 class="font-bold mb-3">🎯 群组专属通知</h3>' +
+        '<p class="text-xs text-gray-400 mb-3">为特定群组单独设置通知接收人</p>';
+      
+      // 修复：检查是否有 manage_notifications 权限（不仅是超级管理员）
+      if (currentUser.is_super || checkPermission('manage_notifications')) {
+        html += '<button onclick="showAddGroupNotificationModal()" class="btn-primary px-4 py-2 rounded-lg text-sm mb-3">➕ 添加群组通知</button>';
+      }
+      
+      html += '<div class="space-y-2">';
+      
+      var groupNotifs = [];
+      for (var j = 0; j < (data.notifications || []).length; j++) {
+        if (data.notifications[j].group_id) {
+          groupNotifs.push(data.notifications[j]);
+        }
+      }
+      
+      if (groupNotifs.length === 0) {
+        html += '<div class="text-gray-400 text-sm">暂无群组专属通知设置</div>';
+      } else {
+        for (var k = 0; k < groupNotifs.length; k++) {
+          var n = groupNotifs[k];
+          var canToggle = currentUser.is_super || n.admin_id === getCurrentUserId();
+          
+          html += '<div class="glass p-3 rounded-lg flex items-center justify-between">' +
+            '<div>' +
+              '<div class="font-medium">管理员 ID: ' + escapeHtml(n.admin_id) + 
+                (n.admin_id === getCurrentUserId() ? ' <span class="text-xs text-blue-400">(我)</span>' : '') +
+              '</div>' +
+              '<div class="text-xs text-gray-400">群组: ' + escapeHtml(n.group_title || n.group_id) + '</div>' +
+            '</div>' +
+            '<div class="flex items-center gap-3">' +
+              '<div class="switch ' + (n.enabled ? 'on' : '') + (canToggle ? '' : ' opacity-50 cursor-not-allowed') + '" onclick="' + (canToggle ? 'toggleNotification(' + n.id + ', ' + (!n.enabled) + ')' : '') + '"></div>' +
+              (canToggle ? 
+                '<button onclick="deleteNotification(' + n.id + ')" class="btn-danger p-2 rounded-lg text-sm">🗑️</button>' : 
+                '<span class="text-xs text-gray-500 p-2">只读</span>') +
+            '</div>' +
+          '</div>';
+        }
+      }
+      
+      html += '</div></div>';
+      
+      content.innerHTML = html;
+    }
+
+    // 修复：showAddGroupNotificationModal 函数，支持普通管理员
+    function showAddGroupNotificationModal() {
+      // 检查权限
+      if (!currentUser.is_super && !checkPermission('manage_notifications')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var modalContent = '<h3 class="text-lg font-bold mb-4">添加群组专属通知</h3>' +
+        '<div class="space-y-4">';
+      
+      // 如果是超级管理员，可以指定任意管理员
+      if (currentUser.is_super) {
+        modalContent += 
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">管理员 ID</label>' +
+            '<input type="text" id="notifAdminId" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>';
+      } else {
+        // 普通管理员只能添加自己的通知，显示当前用户信息
+        modalContent += 
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">管理员</label>' +
+            '<div class="glass p-3 rounded-lg">' +
+              renderUserInfo(currentUser, false) +
+            '</div>' +
+            '<input type="hidden" id="notifAdminId" value="' + escapeAttr(getCurrentUserId()) + '">' +
+          '</div>';
+      }
+      
+      modalContent += 
+        '<div>' +
+          '<label class="block text-sm text-gray-400 mb-1">群组</label>' +
+          '<select id="notifGroupId" class="w-full px-4 py-2 rounded-lg">' +
+          '</select>' +
+        '</div>' +
+        '<button onclick="addGroupNotification()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+      '</div>';
+      
+      showModal(modalContent);
+      
+      var groups = dataCache.get('groups') || [];
+      var select = document.getElementById('notifGroupId');
+      if (groups.length === 0) {
+        var emptyOption = document.createElement('option');
+        emptyOption.value = '';
+        emptyOption.textContent = '暂无可用群组';
+        emptyOption.disabled = true;
+        emptyOption.selected = true;
+        select.appendChild(emptyOption);
+        return;
+      }
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        var option = document.createElement('option');
+        option.value = g.id;
+        option.textContent = g.title;
+        select.appendChild(option);
+      }
+    }
+
+    // 修复开关问题
+    // 修改 toggleAdminNotification 函数，使用更新接口而不是每次都创建新记录
+    async function toggleAdminNotification(adminId, enabled, notifId) {
+      // 如果是普通管理员，检查是否是自己的通知
+      if (!currentUser.is_super && adminId !== getCurrentUserId()) {
+        showToast('只能管理自己的通知设置', 'error');
+        return;
+      }
+      
+      // 修复：如果有 notification_id，使用更新接口；否则使用创建接口
+      var result;
+      if (notifId) {
+        // 使用更新接口
+        result = await api('/notifications/' + notifId, {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: enabled })
+        });
+      } else {
+        // 使用创建接口
+        result = await api('/notifications', {
+          method: 'POST',
+          body: JSON.stringify({ adminId: adminId, groupId: null, enabled: enabled })
+        });
+      }
+      
+      if (!result) return;
+      showToast(enabled ? '通知已开启' : '通知已关闭');
+      dataCache.clear('notifications');
+      await loadNotifications();
+    }
+
+    async function toggleNotification(id, enabled) {
+      // 获取通知详情
+      var data = dataCache.get('notifications');
+      if (!data) {
+        showToast('数据加载失败，请刷新重试', 'error');
+        return;
+      }
+      
+      // 查找通知
+      var notification = null;
+      for (var i = 0; i < data.notifications.length; i++) {
+        if (data.notifications[i].id == id) {
+          notification = data.notifications[i];
+          break;
+        }
+      }
+      
+      if (!notification) {
+        showToast('通知设置不存在', 'error');
+        return;
+      }
+      
+      // 检查权限：普通管理员只能管理自己的通知
+      if (!currentUser.is_super && notification.admin_id !== getCurrentUserId()) {
+        showToast('只能管理自己的通知设置', 'error');
+        return;
+      }
+      
+      var result = await api('/notifications/' + id, { method: 'PUT', body: JSON.stringify({ enabled: enabled }) });
+      if (!result) return;
+      showToast(enabled ? '通知已开启' : '通知已关闭');
+      dataCache.clear('notifications');
+      await loadNotifications();
+    }
+
+    // 修复：addGroupNotification 函数，支持权限检查
+    async function addGroupNotification() {
+      // 检查权限
+      if (!currentUser.is_super && !checkPermission('manage_notifications')) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var adminId = document.getElementById('notifAdminId').value.trim();
+      var groupId = document.getElementById('notifGroupId').value;
+      
+      if (!adminId) return showToast('请输入管理员ID', 'error');
+      if (!isValidNumericId(adminId)) return showToast('管理员ID格式错误', 'error');
+      if (!groupId) return showToast('请选择群组', 'error');
+      
+      // 普通管理员只能添加自己的通知
+      if (!currentUser.is_super && adminId !== getCurrentUserId()) {
+        showToast('只能添加自己的通知设置', 'error');
+        return;
+      }
+      
+      var result = await api('/notifications', { 
+        method: 'POST', 
+        body: JSON.stringify({ 
+          adminId: adminId, 
+          groupId: groupId, 
+          enabled: true 
+        }) 
+      });
+      
+      if (!result) return;
+      showToast('添加成功');
+      closeModal();
+      dataCache.clear('notifications');
+      await loadNotifications();
+    }
+
+    async function deleteNotification(id) {
+      // 获取通知详情
+      var data = dataCache.get('notifications');
+      if (!data) {
+        showToast('数据加载失败，请刷新重试', 'error');
+        return;
+      }
+      
+      // 查找通知
+      var notification = null;
+      for (var i = 0; i < data.notifications.length; i++) {
+        if (data.notifications[i].id == id) {
+          notification = data.notifications[i];
+          break;
+        }
+      }
+      
+      if (!notification) {
+        showToast('通知设置不存在', 'error');
+        return;
+      }
+      
+      // 检查权限：普通管理员只能删除自己的通知
+      if (!currentUser.is_super && notification.admin_id !== getCurrentUserId()) {
+        showToast('只能删除自己的通知设置', 'error');
+        return;
+      }
+      
+      if (!await confirmAction({ title: '删除通知设置', message: '确定要删除此通知设置吗？' })) return;
+      
+      var result = await api('/notifications/' + id, { method: 'DELETE' });
+      if (!result) return;
+      showToast('已删除');
+      dataCache.clear('notifications');
+      await loadNotifications();
+    }
+
+    // ==================== 违禁词管理 ====================
+    var SCOPE_CONFIG = {
+      'all':              { label: '全局',    color: 'text-red-400',    bg: 'bg-red-500',    desc: '所有方向均拦截' },
+      'profile_name':     { label: '昵称',    color: 'text-blue-400',   bg: 'bg-blue-500',   desc: '用户昵称（入群检测）' },
+      'profile_username': { label: '@用户名', color: 'text-cyan-400',   bg: 'bg-cyan-500',   desc: '用户@名（入群检测）' },
+      'profile_bio':      { label: '简介',    color: 'text-purple-400', bg: 'bg-purple-500', desc: '用户简介（入群检测）' },
+      'msg_text':         { label: '消息',    color: 'text-green-400',  bg: 'bg-green-500',  desc: '消息正文（群内发言）' },
+      'msg_quote':        { label: '引用',    color: 'text-yellow-400', bg: 'bg-yellow-500', desc: '引用/被回复内容' },
+      'msg_forward':      { label: '转发',    color: 'text-orange-400', bg: 'bg-orange-500', desc: '转发/外部引用来源' }
+    };
+
+    var SCOPE_GROUPS = [
+      { key: 'all',     label: '全部',      filter: null },
+      { key: 'global',  label: '🔴 全局拦截', filter: function(s) { return s === 'all'; } },
+      { key: 'profile', label: '👤 用户资料', filter: function(s) { return s !== 'all' && s.includes('profile') && !s.includes('msg'); } },
+      { key: 'message', label: '💬 消息内容', filter: function(s) { return s !== 'all' && s.includes('msg') && !s.includes('profile'); } },
+      { key: 'mixed',   label: '🔀 混合',    filter: function(s) { return s !== 'all' && s.includes('profile') && s.includes('msg'); } }
+    ];
+
+    var currentBanwordGroup = 'all';
+
+    function getScopeBadges(scope) {
+      var scopes = (scope || 'all').split(',').map(function(s) { return s.trim(); });
+      var html = '';
+      for (var i = 0; i < scopes.length; i++) {
+        var cfg = SCOPE_CONFIG[scopes[i]];
+        if (cfg) {
+          html += '<span class="text-xs px-1.5 py-0.5 rounded ' + cfg.bg + ' bg-opacity-20 ' + cfg.color + '">' + cfg.label + '</span>';
+        }
+      }
+      return html;
+    }
+
+    function getScopeSelectHtml(selectedScope) {
+      selectedScope = selectedScope || 'all';
+      var selectedScopes = selectedScope.split(',').map(function(s) { return s.trim(); });
+      var html = '<div class="space-y-2">';
+      var keys = Object.keys(SCOPE_CONFIG);
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var cfg = SCOPE_CONFIG[k];
+        var checked = selectedScopes.includes(k) || selectedScope === 'all' && k === 'all';
+        html += '<label class="flex items-center gap-2 cursor-pointer">' +
+          '<input type="checkbox" class="scope-checkbox" value="' + k + '"' + (checked ? ' checked' : '') + '>' +
+          '<span class="text-xs px-1.5 py-0.5 rounded ' + cfg.bg + ' bg-opacity-20 ' + cfg.color + '">' + cfg.label + '</span>' +
+          '<span class="text-sm text-gray-400">' + cfg.desc + '</span>' +
+        '</label>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function collectScopeValue() {
+      var checkboxes = document.querySelectorAll('.scope-checkbox:checked');
+      var vals = [];
+      for (var i = 0; i < checkboxes.length; i++) {
+        vals.push(checkboxes[i].value);
+      }
+      if (vals.length === 0 || vals.includes('all')) return 'all';
+      return vals.join(',');
+    }
+
+    function getMatchTypeSelectHtml(selected) {
+      selected = selected || 'plain';
+      return '<select id="banwordMatchType" class="w-full px-4 py-2 rounded-lg">' +
+        '<option value="plain"' + (selected === 'plain' ? ' selected' : '') + '>普通包含</option>' +
+        '<option value="regex"' + (selected === 'regex' ? ' selected' : '') + '>正则表达式</option>' +
+      '</select>';
+    }
+
+    function collectMatchTypeValue() {
+      var el = document.getElementById('banwordMatchType');
+      return el && el.value === 'regex' ? 'regex' : 'plain';
+    }
+
+    function isValidRegexText(text) {
+      try {
+        new RegExp(text);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    async function loadBanwords() {
+      if (!checkPermission('view_banwords')) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+
+      var banwords = await dataCache.fetch('banwords', '/banwords');
+      if (!banwords) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
+        return;
+      }
+
+      var content = document.getElementById('content');
+
+      var html = '<div class="flex flex-col md:flex-row gap-4 mb-4">';
+      if (checkPermission('manage_banwords')) {
+        html += '<button onclick="showAddBanwordModal()" class="btn-primary px-4 py-2 rounded-lg">➕ 添加违禁词</button>' +
+                '<button onclick="showBatchBanwordModal()" class="btn-success px-4 py-2 rounded-lg">📥 批量导入</button>' +
+                '<button onclick="exportBanwords()" class="glass px-4 py-2 rounded-lg hover:bg-white/10">📤 导出</button>';
+      }
+      html += '<input id="banwordSearch" type="text" placeholder="搜索违禁词" class="px-4 py-2 rounded-lg" oninput="filterBanwordGroup(currentBanwordGroup)">' +
+              '<select id="banwordMatchFilter" class="px-4 py-2 rounded-lg" onchange="filterBanwordGroup(currentBanwordGroup)">' +
+                '<option value="all">全部类型</option>' +
+                '<option value="plain">普通</option>' +
+                '<option value="regex">正则</option>' +
+              '</select>' +
+              '</div>';
+
+      html += '<div class="flex gap-2 overflow-x-auto pb-2 mb-4">';
+      for (var gi = 0; gi < SCOPE_GROUPS.length; gi++) {
+        var g = SCOPE_GROUPS[gi];
+        var count = 0;
+        if (g.filter === null) {
+          count = banwords.length;
+        } else {
+          for (var bi = 0; bi < banwords.length; bi++) {
+            var ws = (banwords[bi].scope || 'all');
+            if (g.filter(ws)) count++;
+          }
+        }
+        html += '<button class="banword-group-btn px-3 py-1 rounded-full text-sm whitespace-nowrap glass ' +
+          (g.key === currentBanwordGroup ? 'tab-active' : '') +
+          '" data-group="' + g.key + '" onclick="filterBanwordGroup(\'' + g.key + '\')">' +
+          g.label + ' <span class="text-xs opacity-60">(' + count + ')</span></button>';
+      }
+      html += '</div>';
+
+      html += '<div id="banwordsList">' + renderBanwords(banwords, currentBanwordGroup) + '</div>';
+      content.innerHTML = html;
+    }
+
+    function renderBanwords(banwords, groupKey) {
+      var group = null;
+      for (var gi = 0; gi < SCOPE_GROUPS.length; gi++) {
+        if (SCOPE_GROUPS[gi].key === groupKey) { group = SCOPE_GROUPS[gi]; break; }
+      }
+      var filtered = [];
+      var search = (document.getElementById('banwordSearch')?.value || '').trim().toLowerCase();
+      var matchFilter = document.getElementById('banwordMatchFilter')?.value || 'all';
+      for (var i = 0; i < banwords.length; i++) {
+        var ws = (banwords[i].scope || 'all');
+        var mt = banwords[i].match_type || 'plain';
+        var wordText = (banwords[i].word || '').toLowerCase();
+        if ((!group || group.filter === null || group.filter(ws)) &&
+            (matchFilter === 'all' || mt === matchFilter) &&
+            (!search || wordText.includes(search))) {
+          filtered.push(banwords[i]);
+        }
+      }
+
+      if (filtered.length === 0) {
+        return '<div class="card p-4 text-center text-gray-400">该分组暂无违禁词</div>';
+      }
+
+      var grouped = {};
+      for (var i = 0; i < filtered.length; i++) {
+        var s = filtered[i].scope || 'all';
+        if (!grouped[s]) grouped[s] = [];
+        grouped[s].push(filtered[i]);
+      }
+
+      // 排序：all优先，然后按scope字符串排序
+      var scopeKeys = Object.keys(grouped).sort(function(a, b) {
+        if (a === 'all') return -1;
+        if (b === 'all') return 1;
+        return a.localeCompare(b);
+      });
+
+      var html = '';
+      for (var si = 0; si < scopeKeys.length; si++) {
+        var sk = scopeKeys[si];
+        var words = grouped[sk];
+        html += '<div class="card p-4 mb-3">' +
+          '<div class="flex items-center gap-2 mb-3">' +
+            getScopeBadges(sk) +
+            '<span class="text-xs text-gray-500">' + words.length + ' 个词</span>' +
+          '</div>' +
+          '<div class="flex flex-wrap gap-2">';
+        for (var wi = 0; wi < words.length; wi++) {
+          var w = words[wi];
+          var matchType = w.match_type || 'plain';
+          html += '<span class="glass px-3 py-1 rounded-full text-sm flex items-center gap-1">' +
+            escapeHtml(w.word) +
+            '<span class="text-[10px] px-1 rounded ' + (matchType === 'regex' ? 'bg-amber-500/20 text-amber-300' : 'bg-gray-500/20 text-gray-300') + '">' + (matchType === 'regex' ? 'REGEX' : 'TEXT') + '</span>';
+          if (checkPermission('manage_banwords')) {
+            html += '<button onclick="showEditScopeModal(' + w.id + ',\'' + escapeJsString(w.scope || 'all') + '\',\'' + escapeJsString(matchType) + '\')" class="text-gray-400 hover:text-blue-300 text-xs ml-1" title="修改范围">✎</button>' +
+                    '<button onclick="deleteBanword(' + w.id + ')" class="text-red-400 hover:text-red-300 ml-0.5">×</button>';
+          }
+          html += '</span>';
+        }
+        html += '</div></div>';
+      }
+      return html;
+    }
+
+    async function filterBanwordGroup(groupKey) {
+      currentBanwordGroup = groupKey;
+      var btns = document.querySelectorAll('.banword-group-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.remove('tab-active');
+        if (btns[i].dataset.group === groupKey) btns[i].classList.add('tab-active');
+      }
+      var banwords = dataCache.get('banwords') || await api('/banwords') || [];
+      document.getElementById('banwordsList').innerHTML = renderBanwords(banwords, groupKey);
+    }
+
+    function showAddBanwordModal() {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">添加违禁词</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">违禁词</label>' +
+            '<input type="text" id="newBanword" class="w-full px-4 py-2 rounded-lg" placeholder="输入违禁词">' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-2">检测范围（可多选）</label>' +
+            getScopeSelectHtml('all') +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">匹配类型</label>' +
+            getMatchTypeSelectHtml('plain') +
+          '</div>' +
+          '<button onclick="addBanword()" class="btn-primary w-full py-2 rounded-lg">添加</button>' +
+        '</div>'
+      );
+    }
+
+    function showBatchBanwordModal() {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">批量导入违禁词</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">违禁词列表（每行一个，支持 词|scope 格式）</label>' +
+            '<textarea id="batchBanwords" rows="8" class="w-full px-4 py-2 rounded-lg" placeholder="例：&#10;约炮&#10;VPN|profile_name,profile_bio&#10;刷单|profile_bio,msg_text"></textarea>' +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-2">未指定scope的词，默认使用：</label>' +
+            getScopeSelectHtml('all') +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">未指定类型时，默认使用：</label>' +
+            getMatchTypeSelectHtml('plain') +
+          '</div>' +
+          '<button onclick="batchAddBanwords()" class="btn-primary w-full py-2 rounded-lg">导入</button>' +
+        '</div>'
+      );
+    }
+
+    function showEditScopeModal(id, currentScope, currentMatchType) {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">修改检测范围</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-2">检测范围（可多选）</label>' +
+            getScopeSelectHtml(currentScope) +
+          '</div>' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">匹配类型</label>' +
+            getMatchTypeSelectHtml(currentMatchType || 'plain') +
+          '</div>' +
+          '<button onclick="updateBanwordScope(' + id + ')" class="btn-primary w-full py-2 rounded-lg">保存</button>' +
+        '</div>'
+      );
+    }
+
+    async function addBanword() {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      var word = document.getElementById('newBanword').value.trim();
+      if (!word) return showToast('请输入违禁词', 'error');
+      var scope = collectScopeValue();
+      var matchType = collectMatchTypeValue();
+      if (matchType === 'regex' && !isValidRegexText(word)) return showToast('正则表达式无效', 'error');
+      var result = await api('/banwords', { method: 'POST', body: JSON.stringify({ word: word, scope: scope, match_type: matchType }) });
+      if (!result) return;
+      showToast('添加成功');
+      closeModal();
+      dataCache.clear('banwords');
+      await loadBanwords();
+    }
+
+    async function batchAddBanwords() {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      var words = document.getElementById('batchBanwords').value.trim();
+      if (!words) return showToast('请输入违禁词', 'error');
+      var scope = collectScopeValue();
+      var matchType = collectMatchTypeValue();
+      var result = await api('/banwords', { method: 'POST', body: JSON.stringify({ words: words, scope: scope, match_type: matchType }) });
+      if (!result) return;
+      showToast('导入成功');
+      closeModal();
+      dataCache.clear('banwords');
+      await loadBanwords();
+    }
+
+    async function updateBanwordScope(id) {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      var scope = collectScopeValue();
+      var matchType = collectMatchTypeValue();
+      var result = await api('/banwords', { method: 'PUT', body: JSON.stringify({ id: id, scope: scope, match_type: matchType }) });
+      if (!result) return;
+      showToast('已更新');
+      closeModal();
+      dataCache.clear('banwords');
+      await loadBanwords();
+    }
+
+    async function deleteBanword(id) {
+      if (!checkPermission('manage_banwords')) { showToast('权限不足', 'error'); return; }
+      if (!await confirmAction({ title: '删除违禁词', message: '确定要删除此违禁词吗？' })) return;
+      var result = await api('/banwords/' + id, { method: 'DELETE' });
+      if (!result) return;
+      showToast('已删除');
+      dataCache.clear('banwords');
+      await loadBanwords();
+    }
+
+    async function exportBanwords() {
+      var banwords = dataCache.get('banwords');
+      if (!banwords) {
+        banwords = await api('/banwords');
+        if (!banwords) return;
+      }
+      var lines = [];
+      for (var i = 0; i < banwords.length; i++) {
+        var w = banwords[i];
+        var matchType = w.match_type || 'plain';
+        lines.push((w.scope && w.scope !== 'all') || matchType !== 'plain' ? w.word + '|' + (w.scope || 'all') + '|' + matchType : w.word);
+      }
+      var text = lines.join(String.fromCharCode(10));
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('已复制到剪贴板');
+      } catch (e) {
+        console.error('Clipboard error:', e);
+        showToast('复制失败，请检查剪贴板权限', 'error');
+      }
+    }
+
+    // ==================== 系统日志 ====================
+    var currentLogType = 'all';
+
+    async function loadLogs() {
+      if (!checkPermission('view_logs')) {
+        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
+        return;
+      }
+
+      var content = document.getElementById('content');
+      var types = ['all', 'join', 'ban', 'whitelist', 'admin', 'notification', 'system', 'error', 'message', 'violation', 'moderation'];
+
+      var html = '<div class="space-y-3 mb-4">' +
+        '<div class="flex items-center justify-between gap-3">' +
+          '<div class="flex gap-2 overflow-x-auto pb-2 flex-1">';
+      for (var i = 0; i < types.length; i++) {
+        var t = types[i];
+        html += '<button class="log-type-btn px-3 py-1 rounded-full text-sm whitespace-nowrap glass ' + 
+          (t === appState.filters.logs.type ? 'tab-active' : '') + '" data-type="' + t + '" onclick="filterLogs(\'' + t + '\')">' +
+          (t === 'all' ? '全部' : t) + '</button>';
+      }
+      html += '</div>';
+      if (currentUser && currentUser.is_super) {
+        html += '<button onclick="clearLogs()" class="px-3 py-1 rounded-lg text-sm whitespace-nowrap bg-red-500 bg-opacity-20 text-red-400 border border-red-500 border-opacity-30 hover:bg-opacity-40 transition-all flex-shrink-0">🗑 清除日志</button>';
+      }
+      html += '</div>' +
+        '<div class="grid grid-cols-2 md:grid-cols-5 gap-2">' +
+          '<input id="logSearch" type="text" placeholder="关键词" class="px-3 py-2 rounded-lg text-sm" value="' + escapeAttr(appState.filters.logs.search) + '">' +
+          '<input id="logUserId" type="text" placeholder="用户ID" class="px-3 py-2 rounded-lg text-sm" value="' + escapeAttr(appState.filters.logs.userId) + '">' +
+          '<input id="logGroupId" type="text" placeholder="群组ID" class="px-3 py-2 rounded-lg text-sm" value="' + escapeAttr(appState.filters.logs.groupId) + '">' +
+          '<input id="logDateFrom" type="date" class="px-3 py-2 rounded-lg text-sm" value="' + escapeAttr(appState.filters.logs.dateFrom) + '">' +
+          '<input id="logDateTo" type="date" class="px-3 py-2 rounded-lg text-sm" value="' + escapeAttr(appState.filters.logs.dateTo) + '">' +
+        '</div>' +
+        '<button onclick="applyLogFilters()" class="btn-primary px-4 py-2 rounded-lg text-sm">筛选</button>' +
+      '</div><div id="logsList" class="space-y-2">' + renderLoadingState() + '</div>' +
+      '<button id="loadMoreLogsBtn" onclick="loadMoreLogs()" class="glass w-full py-2 rounded-lg mt-3 hidden">加载更多</button>';
+      
+      content.innerHTML = html;
+      appState.pagination.logs.nextCursor = null;
+      await loadMoreLogs(true);
+    }
+
+    function renderLogs(logs) {
+      if (logs.length === 0) return '<div class="text-center py-10 text-gray-400">暂无日志</div>';
+      
+      var typeColors = {
+        join: 'text-green-400',
+        ban: 'text-red-400',
+        whitelist: 'text-blue-400',
+        admin: 'text-yellow-400',
+        notification: 'text-purple-400',
+        system: 'text-gray-400',
+        error: 'text-red-500',
+        auth: 'text-cyan-400',
+        group: 'text-orange-400',
+        banword: 'text-pink-400',
+        message: 'text-indigo-400',
+        violation: 'text-rose-400',
+        moderation: 'text-amber-400'
+      };
+      
+      var html = '';
+      for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        html += '<div class="glass p-3 rounded-lg text-sm">' +
+          '<div class="flex justify-between items-start mb-1">' +
+            '<span class="font-medium ' + (typeColors[l.type] || 'text-gray-400') + '">[' + escapeHtml(l.type) + '] ' + escapeHtml(l.action) + '</span>' +
+            '<span class="text-xs text-gray-500">' + escapeHtml(l.created_at || '') + '</span>' +
+          '</div>' +
+          '<div class="text-gray-400 text-xs">' + escapeHtml(l.details || '') + '</div>' +
+        '</div>';
+      }
+      return html;
+    }
+
+    async function filterLogs(type) {
+      if (!checkPermission('view_logs')) return;
+      currentLogType = type;
+      appState.filters.logs.type = type;
+      
+      var btns = document.querySelectorAll('.log-type-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.remove('tab-active');
+        if (btns[i].dataset.type === type) btns[i].classList.add('tab-active');
+      }
+      await loadMoreLogs(true);
+    }
+
+    function applyLogFilters() {
+      appState.filters.logs.search = document.getElementById('logSearch').value.trim();
+      appState.filters.logs.userId = document.getElementById('logUserId').value.trim();
+      appState.filters.logs.groupId = document.getElementById('logGroupId').value.trim();
+      appState.filters.logs.dateFrom = document.getElementById('logDateFrom').value;
+      appState.filters.logs.dateTo = document.getElementById('logDateTo').value;
+      loadMoreLogs(true);
+    }
+
+    async function loadMoreLogs(reset) {
+      if (appState.pagination.logs.loading) return;
+      appState.pagination.logs.loading = true;
+      var list = document.getElementById('logsList');
+      var btn = document.getElementById('loadMoreLogsBtn');
+      if (reset) {
+        appState.pagination.logs.nextCursor = null;
+        if (list) list.innerHTML = renderLoadingState();
+      }
+      var f = appState.filters.logs;
+      var query = encodeQuery({
+        paged: 1,
+        limit: 100,
+        cursor: reset ? '' : appState.pagination.logs.nextCursor,
+        type: f.type,
+        search: f.search,
+        user_id: f.userId,
+        group_id: f.groupId,
+        date_from: f.dateFrom,
+        date_to: f.dateTo
+      });
+      var data = await api('/logs' + query);
+      appState.pagination.logs.loading = false;
+      if (!data) {
+        if (reset && list) list.innerHTML = renderErrorState('日志加载失败');
+        return;
+      }
+      var items = data.items || [];
+      if (reset) {
+        if (list) list.innerHTML = renderLogs(items);
+      } else if (list) {
+        list.insertAdjacentHTML('beforeend', renderLogs(items));
+      }
+      appState.pagination.logs.nextCursor = data.nextCursor || null;
+      if (btn) btn.classList.toggle('hidden', !appState.pagination.logs.nextCursor);
+    }
+
+    async function clearLogs() {
+      if (!currentUser || !currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      var typeLabel = currentLogType === 'all' ? '全部日志' : '[' + currentLogType + '] 类型日志';
+      if (!await confirmAction({ title: '清除日志', message: '确定要清除' + typeLabel + '吗？此操作不可恢复。', requireText: 'DELETE' })) return;
+      
+      var url = '/logs' + (currentLogType !== 'all' ? '?type=' + currentLogType : '');
+      var result = await api(url, { method: 'DELETE' });
+      if (!result) return;
+      showToast('已清除' + typeLabel);
+      dataCache.clear('logs');
+      await loadLogs();
+      // 如果之前筛选了某个类型，清除后重新切回该类型
+      if (currentLogType !== 'all') {
+        await filterLogs(currentLogType);
+      }
+    }
+
+    // ==================== Webhook 设置 ====================
+    function showSetWebhookModal() {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var currentUrl = window.location.origin + '/webhook';
+      showModal(
+        '<h3 class="text-lg font-bold mb-4">设置 Webhook</h3>' +
+        '<div class="space-y-4">' +
+          '<div>' +
+            '<label class="block text-sm text-gray-400 mb-1">Webhook URL</label>' +
+            '<input type="text" id="webhookUrl" value="' + escapeAttr(currentUrl) + '" class="w-full px-4 py-2 rounded-lg">' +
+          '</div>' +
+          '<div class="text-xs text-gray-400">' +
+            '建议使用当前域名的 /webhook 路径' +
+          '</div>' +
+          '<button onclick="setWebhook()" class="btn-primary w-full py-2 rounded-lg">设置</button>' +
+        '</div>'
+      );
+    }
+
+    async function setWebhook() {
+      if (!currentUser.is_super) {
+        showToast('权限不足', 'error');
+        return;
+      }
+      
+      var url = document.getElementById('webhookUrl').value.trim();
+      if (!url) return showToast('请输入 URL', 'error');
+      if (!/^https:\/\/.+\/webhook$/.test(url)) return showToast('Webhook URL 必须是 https 且以 /webhook 结尾', 'error');
+      
+      var result = await api('/webhook', { method: 'POST', body: JSON.stringify({ url: url }) });
+      if (!result) return;
+      if (!result.ok) return showToast('设置失败: ' + (result.description || '未知错误'), 'error');
+      showToast('Webhook 设置成功');
+      closeModal();
+      dataCache.clear('stats');
+      await loadDashboard();
+    }
+
+    // ==================== 模态框 ====================
+    function showModal(content) {
+      document.getElementById('modalContent').innerHTML = content;
+      document.getElementById('modal').classList.add('active');
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.remove('active');
+    }
+
+    // ==================== Toast 提示 ====================
+    function showToast(message, type) {
+      type = type || 'success';
+      var toast = document.createElement('div');
+      toast.className = 'toast ' + (type === 'error' ? 'bg-red-500' : 'bg-green-500');
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      setTimeout(function() { toast.remove(); }, 3000);
+    }
+
+    function renderEmptyState(message) {
+      return '<div class="text-center py-10 text-gray-400">' + escapeHtml(message || '暂无数据') + '</div>';
+    }
+
+    function renderLoadingState() {
+      return '<div class="text-center py-10"><div class="loading-spinner"></div><div class="mt-2 text-gray-400">加载中...</div></div>';
+    }
+
+    function renderErrorState(message) {
+      return '<div class="text-center py-10 text-red-400">' + escapeHtml(message || '加载失败，请重试') + '</div>';
+    }
+
+    function renderList(container, items, renderItem, options) {
+      options = options || {};
+      var el = typeof container === 'string' ? document.getElementById(container) : container;
+      if (!el) return;
+      if (!items || items.length === 0) {
+        el.innerHTML = options.emptyHtml || renderEmptyState(options.emptyText || '暂无数据');
+        return;
+      }
+      var fragment = document.createDocumentFragment();
+      for (var i = 0; i < items.length; i++) {
+        var template = document.createElement('template');
+        template.innerHTML = renderItem(items[i], i);
+        fragment.appendChild(template.content);
+      }
+      el.textContent = '';
+      el.appendChild(fragment);
+    }
+
+    function renderUserCard(user, actionsHtml, options) {
+      options = options || {};
+      var name = ((user.first_name || '') + ' ' + (user.last_name || '')).trim() || options.fallbackName || ('用户 ' + (user.user_id || user.id || ''));
+      var userId = user.user_id || user.id || '';
+      var username = user.username ? '@' + user.username : '';
+      return '<div class="flex items-center gap-3">' +
+        renderAvatar(user.photo_base64, name, options.avatarSize) +
+        '<div class="flex-1 min-w-0">' +
+          '<div class="font-medium truncate">' + escapeHtml(name) + '</div>' +
+          '<div class="text-xs text-gray-400">' +
+            (username ? '<span class="user-tag">' + escapeHtml(username) + '</span> ' : '') +
+            (userId ? 'ID: ' + escapeHtml(userId) : '') +
+          '</div>' +
+          (options.meta ? '<div class="text-xs text-gray-400">' + options.meta + '</div>' : '') +
+        '</div>' +
+        (actionsHtml || '') +
+      '</div>';
+    }
+
+    function confirmAction(options) {
+      options = options || {};
+      return new Promise(function(resolve) {
+        var requireText = options.requireText || '';
+        var inputHtml = requireText ? 
+          '<div class="mt-4">' +
+            '<label class="block text-sm text-gray-400 mb-1">输入 ' + escapeHtml(requireText) + ' 确认</label>' +
+            '<input type="text" id="confirmInput" class="w-full px-4 py-2 rounded-lg" autocomplete="off">' +
+          '</div>' : '';
+        showModal(
+          '<h3 class="text-lg font-bold mb-3">' + escapeHtml(options.title || '确认操作') + '</h3>' +
+          '<div class="text-sm text-gray-300">' + escapeHtml(options.message || '确定执行此操作吗？') + '</div>' +
+          inputHtml +
+          '<div class="grid grid-cols-2 gap-3 mt-5">' +
+            '<button id="confirmCancelBtn" class="glass py-2 rounded-lg">取消</button>' +
+            '<button id="confirmOkBtn" class="btn-danger py-2 rounded-lg">确认</button>' +
+          '</div>'
+        );
+        setTimeout(function() {
+          var okBtn = document.getElementById('confirmOkBtn');
+          var cancelBtn = document.getElementById('confirmCancelBtn');
+          var input = document.getElementById('confirmInput');
+          function finish(value) {
+            closeModal();
+            resolve(value);
+          }
+          cancelBtn.onclick = function() { finish(false); };
+          okBtn.onclick = function() {
+            if (requireText && (!input || input.value !== requireText)) {
+              showToast('确认文本不匹配', 'error');
+              return;
+            }
+            finish(true);
+          };
+          if (input) input.focus();
+        }, 0);
+      });
+    }
+
+    // ==================== 初始化 ====================
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
