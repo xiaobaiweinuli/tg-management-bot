@@ -2156,16 +2156,19 @@ async function handleAPI(request, env, path) {
       const groupId = url.searchParams.get('group_id');
       const dateFrom = url.searchParams.get('date_from');
       const dateTo = url.searchParams.get('date_to');
-      
+      const limit = normalizeApiLimit(url.searchParams.get('limit'), 100);
+      const paged = url.searchParams.get('paged') === '1';
+      const cursor = url.searchParams.get('cursor');
+
       // 需要 view_bans 权限
       if (!hasScopedPermission(user, CONFIG.PERMISSIONS.VIEW_BANS, groupId || null)) {
         return jsonResponse({ error: '权限不足' }, 403);
       }
-      
+
       let query = 'SELECT b.*, g.title as group_title, g.photo_base64 as group_photo FROM bans b LEFT JOIN groups g ON b.group_id = g.id WHERE b.is_active = 1';
       const params = [];
       query = appendGroupScope(query, params, 'b.group_id', user);
-      
+
       if (search) {
         query += ' AND (b.user_id LIKE ? OR b.username LIKE ? OR b.first_name LIKE ?)';
         params.push(`%${search}%`, `%${search}%`, `%${search}%`);
@@ -2187,12 +2190,27 @@ async function handleAPI(request, env, path) {
         query += ' AND b.banned_at_iso <= ?';
         params.push(parsed.value);
       }
-      
-      query += ' ORDER BY COALESCE(b.banned_at_iso, b.banned_at) DESC LIMIT 100';
-      
+      if (cursor) {
+        const cursorId = parseInt(cursor, 10);
+        if (!Number.isFinite(cursorId) || cursorId < 1) {
+          return jsonResponse({ error: 'cursor格式错误' }, 400);
+        }
+        query += ' AND b.id < ?';
+        params.push(cursorId);
+      }
+
+      query += ' ORDER BY b.id DESC LIMIT ?';
+      params.push(paged ? limit + 1 : limit);
+
       const stmt = db.prepare(query);
       const bans = await (params.length ? stmt.bind(...params) : stmt).all();
-      return jsonResponse(getD1Rows(bans));
+      const rows = getD1Rows(bans);
+      if (paged) {
+        const items = rows.slice(0, limit);
+        const nextCursor = rows.length > limit ? items[items.length - 1]?.id : null;
+        return jsonResponse({ items, nextCursor });
+      }
+      return jsonResponse(rows);
     }
     
     if (path.startsWith('/api/bans/') && !path.includes('unban') && request.method === 'DELETE') {

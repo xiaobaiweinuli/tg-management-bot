@@ -358,7 +358,8 @@
         banwords: { group: 'all', matchType: 'all', search: '' }
       },
       pagination: {
-        logs: { nextCursor: null, loading: false }
+        logs: { nextCursor: null, loading: false },
+        bans: { nextCursor: null, loading: false }
       }
     };
     
@@ -1244,36 +1245,77 @@
     }
 
     // ==================== 封禁管理 ====================
+    /**
+     * 加载并渲染封禁管理页面的筛选栏、列表容器和加载更多按钮。
+     * 数据通过 loadMoreBans(true) 流式分页加载。
+     */
     async function loadBans() {
       if (!checkPermission('view_bans')) {
         document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">权限不足</div>';
         return;
       }
-      
-      var bans = await dataCache.fetch('bans', '/bans');
-      if (!bans) {
-        document.getElementById('content').innerHTML = '<div class="text-center py-10 text-red-400">加载失败，请重试</div>';
-        return;
-      }
-      
+
       var groups = await dataCache.fetch('groups', '/groups') || [];
       var content = document.getElementById('content');
-      
+
       var html = '<div class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">' +
         '<input type="text" id="banSearch" placeholder="搜索用户ID/用户名..." class="px-4 py-2 rounded-lg" onkeyup="debounceSearch(searchBans)">' +
         '<select id="banGroupFilter" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
           '<option value="">所有群组</option>';
-      
+
       for (var i = 0; i < groups.length; i++) {
         html += '<option value="' + escapeAttr(groups[i].id) + '">' + escapeHtml(groups[i].title) + '</option>';
       }
-      
+
       html += '</select>' +
         '<input type="date" id="banDateFrom" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
         '<input type="date" id="banDateTo" class="px-4 py-2 rounded-lg" onchange="filterBans()">' +
         '<button onclick="filterBans()" class="btn-primary px-4 py-2 rounded-lg">筛选</button>' +
-        '</div><div id="bansList" class="space-y-3">' + renderBansList(bans, groups) + '</div>';
+        '</div><div id="bansList" class="space-y-3">' + renderLoadingState() + '</div>' +
+        '<button id="loadMoreBansBtn" onclick="loadMoreBans()" class="glass w-full py-2 rounded-lg mt-3 hidden">加载更多</button>';
       content.innerHTML = html;
+      appState.pagination.bans.nextCursor = null;
+      await loadMoreBans(true);
+    }
+
+    /**
+     * 流式分页加载封禁记录。
+     * reset=true 时重置列表并加载第一页；reset=false 时追加下一页。
+     */
+    async function loadMoreBans(reset) {
+      if (appState.pagination.bans.loading) return;
+      appState.pagination.bans.loading = true;
+      var list = document.getElementById('bansList');
+      var btn = document.getElementById('loadMoreBansBtn');
+      if (reset) {
+        appState.pagination.bans.nextCursor = null;
+        if (list) list.innerHTML = renderLoadingState();
+      }
+      var f = appState.filters.bans;
+      var query = encodeQuery({
+        paged: 1,
+        limit: 100,
+        cursor: reset ? '' : appState.pagination.bans.nextCursor,
+        search: f.search,
+        group_id: f.groupId,
+        date_from: f.dateFrom,
+        date_to: f.dateTo
+      });
+      var data = await api('/bans' + query);
+      appState.pagination.bans.loading = false;
+      if (!data) {
+        if (reset && list) list.innerHTML = renderErrorState('封禁记录加载失败');
+        return;
+      }
+      var items = data.items || [];
+      var groups = dataCache.get('groups') || [];
+      if (reset) {
+        if (list) list.innerHTML = renderBansList(items, groups);
+      } else if (list) {
+        list.insertAdjacentHTML('beforeend', renderBansList(items, groups));
+      }
+      appState.pagination.bans.nextCursor = data.nextCursor || null;
+      if (btn) btn.classList.toggle('hidden', !appState.pagination.bans.nextCursor);
     }
 
     function renderBansList(bans, groups) {
@@ -1343,17 +1385,17 @@
       searchTimer = setTimeout(fn, 300);
     }
 
+    /**
+     * 根据筛选栏的值重置筛选状态并重新流式加载封禁记录。
+     */
     async function searchBans() {
       if (!checkPermission('view_bans')) return;
-      
-      var search = document.getElementById('banSearch').value;
-      var groupId = document.getElementById('banGroupFilter').value;
-      var dateFrom = document.getElementById('banDateFrom').value;
-      var dateTo = document.getElementById('banDateTo').value;
-      var bans = await api('/bans' + encodeQuery({ search: search, group_id: groupId, date_from: dateFrom, date_to: dateTo }));
-      if (!bans) return;
-      var groups = dataCache.get('groups') || [];
-      document.getElementById('bansList').innerHTML = renderBansList(bans, groups);
+
+      appState.filters.bans.search = document.getElementById('banSearch').value;
+      appState.filters.bans.groupId = document.getElementById('banGroupFilter').value;
+      appState.filters.bans.dateFrom = document.getElementById('banDateFrom').value;
+      appState.filters.bans.dateTo = document.getElementById('banDateTo').value;
+      await loadMoreBans(true);
     }
 
     async function filterBans() {
